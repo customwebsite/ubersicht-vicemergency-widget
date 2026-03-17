@@ -1,6 +1,6 @@
 # VicEmergency Desktop Widget for Übersicht
 
-Victorian emergency incidents on your macOS desktop with live map, warning levels, and category breakdown.
+Victorian emergency incidents in Australia on your macOS desktop with live map, warning levels, and category breakdown.
 
 Fetches directly from the official [VicEmergency](https://emergency.vic.gov.au) GeoJSON feed — no Home Assistant or other server required.
 
