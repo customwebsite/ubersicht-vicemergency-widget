@@ -45,8 +45,29 @@ const WIDGET_POSITION = {         // Screen position (edit here, not in settings
 
 export const refreshFrequency = 120_000; // 2 minutes
 
-// Read config file + feed in one command, output as JSON envelope
-export const command = `echo '{"config":'; cat ${CONFIG_PATH} 2>/dev/null || echo '{}'; echo ',"feed":'; curl -s --compressed --max-time 15 "https://emergency.vic.gov.au/public/osom-geojson.json" 2>/dev/null || echo '{"error":true}'; echo '}'`;
+// Three-tier feed fallback: GeoJSON → JSON → XML with format tagging
+export const command = `
+  echo '{"config":';
+  cat ${CONFIG_PATH} 2>/dev/null || echo '{}';
+  echo ',"feed":';
+  FEED=$(curl -sf --compressed --max-time 10 "https://emergency.vic.gov.au/public/osom-geojson.json" 2>/dev/null);
+  if [ -n "$FEED" ]; then
+    echo "{\\"_format\\":\\"geojson\\",\\"data\\":$FEED}";
+  else
+    FEED=$(curl -sf --compressed --max-time 10 "https://data.emergency.vic.gov.au/Show?pageId=getIncidentJSON" 2>/dev/null);
+    if [ -n "$FEED" ]; then
+      echo "{\\"_format\\":\\"json\\",\\"data\\":$FEED}";
+    else
+      FEED=$(curl -sf --compressed --max-time 10 "https://data.emergency.vic.gov.au/Show?pageId=getIncidentXML" 2>/dev/null);
+      if [ -n "$FEED" ]; then
+        echo "{\\"_format\\":\\"xml\\",\\"data\\":\\"XMLSTART\\"}" | sed "s/XMLSTART/$(echo "$FEED" | base64 | tr -d '\\n')/";
+      else
+        echo "{\\"error\\":true}";
+      fi;
+    fi;
+  fi;
+  echo '}'
+`;
 
 import { run } from "uebersicht";
 
@@ -147,55 +168,167 @@ function compassBearing(lat1, lon1, lat2, lon2) {
 function parseFeed(raw, cfg) {
   try {
     const data = typeof raw === "string" ? JSON.parse(raw) : raw;
-    if (data.error) return { error: "Feed unavailable", incidents: [] };
-    const features = data.features || [];
-    const incidents = [];
+    if (data.error) return { error: "Feed unavailable", incidents: [], feedSource: "none" };
 
-    for (const f of features) {
-      const p = f.properties || {};
-      const id = p.id;
-      if (!id) continue;
+    const format = data._format || "geojson";
+    const feedData = data.data || data;
 
-      if (cfg.EXCLUDE_BURN_AREA && p.feedType === "burn-area") continue;
-
-      const coords = extractCoords(f.geometry);
-      if (!coords) continue;
-
-      const cap = typeof p.cap === "object" ? p.cap : {};
-      const eventType = cap.event || null;
-
-      const dist = haversine(cfg.HOME_LAT, cfg.HOME_LON, coords.lat, coords.lon);
-      if (dist > cfg.RADIUS_KM) continue;
-
-      const bearing = compassBearing(cfg.HOME_LAT, cfg.HOME_LON, coords.lat, coords.lon);
-      const group = getGroup(p.category1, eventType);
-      const warningLevel = FEEDTYPE_WARNING[p.feedType] || null;
-
-      incidents.push({
-        id: String(id),
-        title: p.sourceTitle || "",
-        category1: p.category1 || "",
-        category2: p.category2 || "",
-        eventType,
-        feedType: p.feedType || "incident",
-        status: p.status || "",
-        location: p.location || "",
-        sourceOrg: p.sourceOrg || "",
-        group,
-        warningLevel,
-        distance: Math.round(dist * 10) / 10,
-        bearing,
-        lat: coords.lat,
-        lon: coords.lon,
-      });
+    let rawIncidents;
+    if (format === "geojson") {
+      rawIncidents = parseGeoJSON(feedData, cfg);
+    } else if (format === "json") {
+      rawIncidents = parseJSONFallback(feedData, cfg);
+    } else if (format === "xml") {
+      rawIncidents = parseXMLFallback(feedData, cfg);
+    } else {
+      // Try as GeoJSON if no format tag (backward compat)
+      rawIncidents = parseGeoJSON(feedData, cfg);
     }
 
-    incidents.sort((a, b) => a.distance - b.distance);
-    return { error: null, incidents };
+    rawIncidents.sort((a, b) => a.distance - b.distance);
+    return { error: null, incidents: rawIncidents, feedSource: format };
 
   } catch (e) {
-    return { error: `Parse error: ${e.message}`, incidents: [] };
+    return { error: `Parse error: ${e.message}`, incidents: [], feedSource: "none" };
   }
+}
+
+function parseGeoJSON(data, cfg) {
+  const features = data.features || [];
+  const incidents = [];
+
+  for (const f of features) {
+    const p = f.properties || {};
+    const id = p.id;
+    if (!id) continue;
+
+    if (cfg.EXCLUDE_BURN_AREA && p.feedType === "burn-area") continue;
+
+    const coords = extractCoords(f.geometry);
+    if (!coords) continue;
+
+    const cap = typeof p.cap === "object" ? p.cap : {};
+    const eventType = cap.event || null;
+
+    const dist = haversine(cfg.HOME_LAT, cfg.HOME_LON, coords.lat, coords.lon);
+    if (dist > cfg.RADIUS_KM) continue;
+
+    const bearing = compassBearing(cfg.HOME_LAT, cfg.HOME_LON, coords.lat, coords.lon);
+    const group = getGroup(p.category1, eventType);
+    const warningLevel = FEEDTYPE_WARNING[p.feedType] || null;
+
+    incidents.push({
+      id: String(id),
+      title: p.sourceTitle || "",
+      category1: p.category1 || "",
+      category2: p.category2 || "",
+      eventType,
+      feedType: p.feedType || "incident",
+      status: p.status || "",
+      location: p.location || "",
+      sourceOrg: p.sourceOrg || "",
+      group,
+      warningLevel,
+      distance: Math.round(dist * 10) / 10,
+      bearing,
+      lat: coords.lat,
+      lon: coords.lon,
+    });
+  }
+  return incidents;
+}
+
+function parseJSONFallback(data, cfg) {
+  const results = data.results || data.incidents || (Array.isArray(data) ? data : []);
+  const incidents = [];
+
+  for (const item of results) {
+    const id = item.incidentNo || item.id;
+    if (!id) continue;
+
+    if (cfg.EXCLUDE_BURN_AREA && item.feedType === "burn-area") continue;
+
+    const lat = parseFloat(item.latitude || item.lat);
+    const lon = parseFloat(item.longitude || item.lon || item.long);
+    if (!lat || !lon) continue;
+
+    const dist = haversine(cfg.HOME_LAT, cfg.HOME_LON, lat, lon);
+    if (dist > cfg.RADIUS_KM) continue;
+
+    const bearing = compassBearing(cfg.HOME_LAT, cfg.HOME_LON, lat, lon);
+    const category1 = item.category1 || "";
+    const group = getGroup(category1, null);
+    const warningLevel = FEEDTYPE_WARNING[item.feedType] || null;
+
+    incidents.push({
+      id: String(id),
+      title: item.name || item.sourceTitle || "",
+      category1,
+      category2: item.category2 || "",
+      eventType: null,
+      feedType: item.feedType || "incident",
+      status: item.incidentStatus || item.status || "",
+      location: item.incidentLocation || item.location || "",
+      sourceOrg: item.agency || item.sourceOrg || "",
+      group,
+      warningLevel,
+      distance: Math.round(dist * 10) / 10,
+      bearing,
+      lat,
+      lon,
+    });
+  }
+  return incidents;
+}
+
+function parseXMLFallback(data, cfg) {
+  // data is base64-encoded XML string
+  const xmlStr = typeof data === "string" ? atob(data) : "";
+  if (!xmlStr) return [];
+
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(xmlStr, "text/xml");
+  const items = doc.querySelectorAll("incident");
+  const incidents = [];
+
+  for (const el of items) {
+    const txt = (tag) => { const n = el.querySelector(tag); return n ? n.textContent.trim() : ""; };
+    const id = txt("id");
+    if (!id) continue;
+
+    if (cfg.EXCLUDE_BURN_AREA && txt("feedType") === "burn-area") continue;
+
+    const lat = parseFloat(txt("lat"));
+    const lon = parseFloat(txt("lon") || txt("long"));
+    if (!lat || !lon) continue;
+
+    const dist = haversine(cfg.HOME_LAT, cfg.HOME_LON, lat, lon);
+    if (dist > cfg.RADIUS_KM) continue;
+
+    const bearing = compassBearing(cfg.HOME_LAT, cfg.HOME_LON, lat, lon);
+    const category1 = txt("category1");
+    const group = getGroup(category1, null);
+    const warningLevel = FEEDTYPE_WARNING[txt("feedType")] || null;
+
+    incidents.push({
+      id,
+      title: txt("sourceTitle"),
+      category1,
+      category2: txt("category2"),
+      eventType: null,
+      feedType: txt("feedType") || "incident",
+      status: txt("status"),
+      location: txt("location"),
+      sourceOrg: txt("sourceOrg"),
+      group,
+      warningLevel,
+      distance: Math.round(dist * 10) / 10,
+      bearing,
+      lat,
+      lon,
+    });
+  }
+  return incidents;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -468,7 +601,7 @@ export const render = ({ output }) => {
     try { feedData = JSON.parse(output); } catch (e2) { feedData = { error: true }; }
   }
 
-  const { error, incidents } = parseFeed(feedData, cfg);
+  const { error, incidents, feedSource } = parseFeed(feedData, cfg);
   const now = new Date();
   const updated = now.toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" });
 
@@ -693,7 +826,7 @@ export const render = ({ output }) => {
               {incidents.length === 0
                 ? "No active incidents"
                 : `${incidents.length} active incident${incidents.length !== 1 ? "s" : ""}`}
-              <span className="ve-feed-dot" style={{ background: "#4CAF50" }}></span>
+              <span className="ve-feed-dot" style={{ background: feedSource === "geojson" ? "#4CAF50" : "#FFC107" }} title={`Feed: ${feedSource}`}></span>
             </span>
           </div>
           <div className="ve-header-actions">

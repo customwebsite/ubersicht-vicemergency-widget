@@ -1,6 +1,6 @@
 # VicEmergency Desktop Widget for Übersicht
 
-Victorian emergency incidents in Australia on your macOS desktop with live map, warning levels, and category breakdown.
+Victorian emergency incidents on your macOS desktop with live map, warning levels, and category breakdown.
 
 Fetches directly from the official [VicEmergency](https://emergency.vic.gov.au) GeoJSON feed — no Home Assistant or other server required.
 
@@ -20,6 +20,7 @@ Fetches directly from the official [VicEmergency](https://emergency.vic.gov.au) 
 - **In-widget settings** — gear icon opens a config panel; click the map to pick your home location
 - **Footer links** — VicEmergency website and ABC 774 radio open in your browser
 - **Feed health indicator** — green dot in the banner confirms the feed is responding
+- **Three-tier feed fallback** — GeoJSON → JSON → XML with automatic recovery
 - **Persistent config** — settings saved to `~/.vicemergency-config.json`, survives widget reloads
 
 ---
@@ -113,6 +114,16 @@ Data feeds may be delayed, incomplete, or unavailable during major events. Alway
 
 Fetches from `emergency.vic.gov.au/public/osom-geojson.json`, published by Emergency Management Victoria. The feed aggregates incidents from CFA, VICSES, BOM, Parks Victoria, VicRoads, ESTA, Melbourne Water, DEECA (formerly DELWP), FRV, and Ambulance Victoria.
 
+### Fallback Chain
+
+If the primary GeoJSON endpoint fails:
+
+1. **Primary:** `emergency.vic.gov.au/public/osom-geojson.json` (full geometry, CAP warnings)
+2. **Fallback JSON:** `data.emergency.vic.gov.au/Show?pageId=getIncidentJSON` (flat lat/lon, incidents only)
+3. **Fallback XML:** `data.emergency.vic.gov.au/Show?pageId=getIncidentXML` (flat lat/lon, incidents only)
+
+The feed status dot in the banner indicates the active source: green for primary GeoJSON, amber for a fallback endpoint, red on total failure. Fallback feeds have reduced data (no warning polygons, no CAP event types) but still provide incident locations and categories.
+
 ### Category Groups
 
 | Group | Example incident types |
@@ -130,6 +141,14 @@ Fetches from `emergency.vic.gov.au/public/osom-geojson.json`, published by Emerg
 - [VicEmergency Data Feed FAQ](https://support.emergency.vic.gov.au/hc/en-gb/articles/235717508-How-do-I-access-the-VicEmergency-data-feed)
 - [CFA RSS Feeds](https://www.cfa.vic.gov.au/rss-feeds)
 - [Bureau of Meteorology Fire Weather Services](http://www.bom.gov.au/weather-services/fire-weather-centre/index.shtml)
+
+---
+
+## Platform
+
+**macOS only.** [Übersicht](https://tracesof.net/uebersicht/) is a macOS-specific desktop widget engine using the native WebKit renderer. It is not available for Windows or Linux.
+
+For Windows users, similar functionality could be achieved by packaging this widget as an [Electron](https://www.electronjs.org/) or [Tauri](https://tauri.app/) desktop app — the core logic (Leaflet map, feed parsers, fallback chain) is standard HTML/CSS/JS and would carry over with minimal changes.
 
 ---
 
