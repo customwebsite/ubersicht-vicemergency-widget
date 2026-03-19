@@ -227,6 +227,7 @@ function parseGeoJSON(data, cfg) {
       status: p.status || "",
       location: p.location || "",
       sourceOrg: p.sourceOrg || "",
+      resources: parseInt(p.resources) || 0,
       group,
       warningLevel,
       distance: Math.round(dist * 10) / 10,
@@ -270,6 +271,7 @@ function parseJSONFallback(data, cfg) {
       status: item.incidentStatus || item.status || "",
       location: item.incidentLocation || item.location || "",
       sourceOrg: item.agency || item.sourceOrg || "",
+      resources: parseInt(item.resourceCount || item.resources) || 0,
       group,
       warningLevel,
       distance: Math.round(dist * 10) / 10,
@@ -320,6 +322,7 @@ function parseXMLFallback(data, cfg) {
       status: txt("status"),
       location: txt("location"),
       sourceOrg: txt("sourceOrg"),
+      resources: parseInt(txt("resources")) || 0,
       group,
       warningLevel,
       distance: Math.round(dist * 10) / 10,
@@ -351,7 +354,7 @@ function buildMapHtml(incidents, cfg) {
     const label = (inc.eventType || inc.category1 || inc.title || "Incident").replace(/'/g, "\\'");
     const detail = (inc.location || "").replace(/'/g, "\\'");
     const dist = inc.distance;
-    return { lat: inc.lat, lon: inc.lon, colour, label, detail, dist, feedType: inc.feedType };
+    return { lat: inc.lat, lon: inc.lon, colour, label, detail, dist, feedType: inc.feedType, resources: inc.resources };
   });
 
   const dataJson = JSON.stringify({ home: { lat: cfg.HOME_LAT, lon: cfg.HOME_LON }, markers, zoom: cfg.MAP_ZOOM })
@@ -486,7 +489,7 @@ function buildMapHtml(incidents, cfg) {
       '<div class="ve-popup">' +
         '<div class="ve-popup-title" style="color:' + m.colour + '">' + m.label + '</div>' +
         (m.detail ? '<div class="ve-popup-detail">' + m.detail + '</div>' : '') +
-        '<div class="ve-popup-dist">' + m.dist + ' km away</div>' +
+        '<div class="ve-popup-dist">' + m.dist + ' km away' + (m.resources > 0 ? ' \\u00b7 ' + m.resources + ' appliance' + (m.resources !== 1 ? 's' : '') : '') + '</div>' +
       '</div>'
     );
     markerRefs.push(cm);
@@ -900,7 +903,10 @@ export const render = ({ output }) => {
                   {displayStatus && <span className="ve-incident-status">{displayStatus}</span>}
                 </div>
               </div>
-              <div className="ve-incident-dist">{inc.distance} km</div>
+              <div className="ve-incident-right">
+                {inc.resources > 0 && <span className="ve-incident-resources">{"\uD83D\uDE92"} {inc.resources}</span>}
+                <span className="ve-incident-dist">{inc.distance} km</span>
+              </div>
             </div>
           );
         })}
@@ -1237,13 +1243,26 @@ export const className = `
   .ve-incident-meta span:first-child { font-weight: 600; }
   .ve-incident-status { color: #636366; }
 
+  .ve-incident-right {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 2px;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+
   .ve-incident-dist {
     font-size: 11px;
     font-weight: 600;
     color: #8E8E93;
     white-space: nowrap;
-    flex-shrink: 0;
-    margin-top: 2px;
+  }
+
+  .ve-incident-resources {
+    font-size: 10px;
+    color: #FB8C00;
+    white-space: nowrap;
   }
 
   .ve-more {
