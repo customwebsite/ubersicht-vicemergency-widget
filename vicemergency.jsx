@@ -109,8 +109,10 @@ const FEEDTYPE_WARNING = {
 
 const WARNING_PRIORITY = { "advice": 1, "watch_and_act": 2, "emergency_warning": 3 };
 
-function getGroup(category1, eventType) {
-  return CATEGORY_GROUPS[category1] || (eventType && CATEGORY_GROUPS[eventType]) || "other";
+// category1 can be a generic label ("Advice", "Community Update"); category2 then holds the hazard
+function getGroup(category1, eventType, category2) {
+  return CATEGORY_GROUPS[category1] || (eventType && CATEGORY_GROUPS[eventType])
+    || (category2 && CATEGORY_GROUPS[category2]) || "other";
 }
 
 function extractCoords(geometry) {
@@ -214,7 +216,7 @@ function parseGeoJSON(data, cfg) {
     if (dist > cfg.RADIUS_KM) continue;
 
     const bearing = compassBearing(cfg.HOME_LAT, cfg.HOME_LON, coords.lat, coords.lon);
-    const group = getGroup(p.category1, eventType);
+    const group = getGroup(p.category1, eventType, p.category2);
     const warningLevel = FEEDTYPE_WARNING[p.feedType] || null;
 
     incidents.push({
@@ -258,7 +260,7 @@ function parseJSONFallback(data, cfg) {
 
     const bearing = compassBearing(cfg.HOME_LAT, cfg.HOME_LON, lat, lon);
     const category1 = item.category1 || "";
-    const group = getGroup(category1, null);
+    const group = getGroup(category1, null, item.category2);
     const warningLevel = FEEDTYPE_WARNING[item.feedType] || null;
 
     incidents.push({
@@ -309,7 +311,7 @@ function parseXMLFallback(data, cfg) {
 
     const bearing = compassBearing(cfg.HOME_LAT, cfg.HOME_LON, lat, lon);
     const category1 = txt("category1");
-    const group = getGroup(category1, null);
+    const group = getGroup(category1, null, txt("category2"));
     const warningLevel = FEEDTYPE_WARNING[txt("feedType")] || null;
 
     incidents.push({
