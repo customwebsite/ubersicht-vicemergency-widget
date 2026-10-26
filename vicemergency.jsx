@@ -391,7 +391,8 @@ function parseQuakes(data, cfg) {
 // ─────────────────────────────────────────────────────────────
 // ▸ EMERGENCY RADIO — official emergency broadcaster for the home location
 // Source: Emergency Management Victoria, "Emergency radio broadcasters (Regional)";
-// ABC transmitters per station. Streams: abc.net.au/listen/live/<slug>.
+// ABC transmitters per station. Live audio: streaming.abc-cdn.net.au/audio/hls/local<slug>.m3u8
+// (played in QuickTime Player; falls back to the abc.net.au/listen/live/<slug> page).
 // ─────────────────────────────────────────────────────────────
 
 const ABC_STATIONS = {
@@ -502,27 +503,28 @@ const ABC_POINTS = [
   [-35.07, 142.32, "wimmera", "594 AM", "Ouyen"],
 ];
 
-// Local community broadcasters named as official emergency broadcasters for these towns
+// Local community broadcasters named as official emergency broadcasters for these towns.
+// "stream" is played in QuickTime Player; "url" (station website) is the fallback.
 // (shown when home is within LOCAL_RADIO_KM of one of them)
 const LOCAL_RADIO_KM = 25;
 const LOCAL_BROADCASTERS = [
-  { name: "UGFM", url: "https://ugfm.org/", towns: [
+  { name: "UGFM", url: "https://ugfm.org/", stream: "https://radio.turbo.net.au:8443/ugfm-live", towns: [
     [-37.19, 145.71, "106.9 FM"], [-37.23, 145.91, "106.9 FM"], [-37.05, 146.08, "106.9 FM"],
     [-37.21, 145.43, "88.9 FM"], [-37.53, 145.33, "94.5 FM"], [-37.51, 145.75, "98.5 FM"],
     [-37.34, 145.29, "98.9 FM"], [-37.23, 145.22, "98.9 FM"] ] },
-  { name: "Radio Mansfield", url: "https://radiomansfield.org.au/", towns: [
+  { name: "Radio Mansfield", url: "https://radiomansfield.org.au/", stream: "https://c7.radioboss.fm:18291/stream", towns: [
     [-37.05, 146.08, "99.7 FM"], [-37.23, 145.91, "99.7 FM"] ] },
-  { name: "Alpine Radio", url: "https://www.alpinefm.org.au/", towns: [
+  { name: "Alpine Radio", url: "https://www.alpinefm.org.au/", stream: "https://stream.sigile.net/3vkv-128-mp3", towns: [
     [-36.73, 146.96, "92.9 FM"], [-36.89, 147.06, "92.9 FM"], [-36.74, 147.17, "96.5 FM"],
     [-36.87, 147.28, "96.5 FM"], [-36.45, 147.00, "96.5 FM"] ] },
-  { name: "Radio KLFM", url: null, towns: [
+  { name: "Radio KLFM", url: null, stream: "https://streamer5.rightclickitservices.com:18006/aac", towns: [
     [-36.76, 144.28, "96.5 FM"], [-36.92, 144.71, "96.5 FM"], [-37.06, 144.22, "96.5 FM"],
     [-37.25, 144.45, "96.5 FM"], [-36.50, 144.61, "96.5 FM"], [-36.57, 143.87, "96.5 FM"],
     [-36.36, 144.70, "96.5 FM"] ] },
-  { name: "Plenty Valley", url: "https://www.pvfm.org.au/", towns: [
+  { name: "Plenty Valley", url: "https://www.pvfm.org.au/", stream: "https://playerservices.streamtheworld.com/api/livestream-redirect/3PVR.mp3", towns: [
     [-37.71, 145.15, "88.6 FM"], [-37.65, 145.02, "88.6 FM"], [-37.70, 145.10, "88.6 FM"],
     [-37.64, 145.19, "88.6 FM"], [-37.68, 145.02, "88.6 FM"], [-37.51, 145.12, "88.6 FM"] ] },
-  { name: "Radio Eastern", url: null, towns: [
+  { name: "Radio Eastern", url: "https://www.radioeasternfm.com.au/", stream: "https://playerservices.streamtheworld.com/api/livestream-redirect/3ECBAAC.aac", towns: [
     [-37.80, 145.28, "98.1 FM"], [-37.76, 145.35, "98.1 FM"] ] },
 ];
 
@@ -539,7 +541,12 @@ function pickRadio(cfg) {
     const p = ABC_POINTS.find((x) => x[2] === slug);
     freq = p ? p[3] : "";
   }
-  const abc = { name: ABC_STATIONS[slug], freq, url: `https://www.abc.net.au/listen/live/${slug}` };
+  const abc = {
+    name: ABC_STATIONS[slug],
+    freq,
+    url: `https://www.abc.net.au/listen/live/${slug}`,
+    stream: `https://streaming.abc-cdn.net.au/audio/hls/local${slug}.m3u8`,
+  };
 
   const local = [];
   for (const b of LOCAL_BROADCASTERS) {
@@ -548,7 +555,7 @@ function pickRadio(cfg) {
       const d = haversine(cfg.HOME_LAT, cfg.HOME_LON, lat, lon);
       if (d <= LOCAL_RADIO_KM && (!near || d < near.d)) near = { d, f };
     }
-    if (near) local.push({ name: b.name, freq: near.f, url: b.url });
+    if (near) local.push({ name: b.name, freq: near.f, url: b.url, stream: b.stream });
   }
   return { abc, local };
 }
@@ -1222,13 +1229,15 @@ export const render = ({ output }) => {
             {"\uD83D\uDD17"} VicEmergency
           </span>
           <span className="ve-footer-link" title={`${radio.abc.name} ${radio.abc.freq} — official emergency broadcaster`}
-                onClick={() => run(`open '${radio.abc.url}'`)}>
+                onClick={() => run(`open -a "QuickTime Player" '${radio.abc.stream}' || open '${radio.abc.url}'`)}>
             {"\uD83D\uDCFB"} {radio.abc.name} {radio.abc.freq}
           </span>
           {radio.local.map((r) => (
-            <span key={r.name} className={r.url ? "ve-footer-link" : "ve-footer-text"}
+            <span key={r.name} className={r.stream || r.url ? "ve-footer-link" : "ve-footer-text"}
                   title={`${r.name} ${r.freq} — local emergency broadcaster`}
-                  onClick={r.url ? () => run(`open '${r.url}'`) : undefined}>
+                  onClick={r.stream
+                    ? () => run(`open -a "QuickTime Player" '${r.stream}'` + (r.url ? ` || open '${r.url}'` : ""))
+                    : r.url ? () => run(`open '${r.url}'`) : undefined}>
               {r.name} {r.freq}
             </span>
           ))}

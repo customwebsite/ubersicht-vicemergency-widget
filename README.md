@@ -20,7 +20,7 @@ Fetches directly from the official [VicEmergency](https://emergency.vic.gov.au) 
 - **Auto-collapse** — compact banner when all clear, expands automatically when incidents appear
 - **In-widget settings** — gear icon opens a config panel; click the map to pick your home location
 - **Local emergency radio** — the footer links to the official ABC emergency broadcaster for your home location (e.g. ABC Central Victoria 91.1 FM around Bendigo, ABC Gippsland 828 AM around Sale) with its frequency, plus any local community emergency broadcaster nearby (e.g. UGFM, Alpine Radio)
-- **Footer links** — VicEmergency website and your local emergency radio stream open in your browser
+- **Footer links** — VicEmergency website opens in your browser; your local emergency radio stations play directly in QuickTime Player
 - **Feed health indicator** — green dot in the banner confirms the feed is responding
 - **Three-tier feed fallback** — GeoJSON → JSON → XML with automatic recovery
 - **Persistent config** — settings saved to `~/.vicemergency-config.json`, survives widget reloads
@@ -124,7 +124,7 @@ Fetches from `emergency.vic.gov.au/public/osom-geojson.json`, published by Emerg
 
 ABC Local Radio is Victoria's official emergency broadcaster, but the station depends on where you are — ABC Melbourne 774 AM covers Melbourne and its fringe, while regional areas are served by ABC Ballarat, Central Victoria, Gippsland, Goulburn Murray, Mildura-Swan Hill, Shepparton, South West Victoria or Wimmera.
 
-The widget picks the station from your home location using a built-in table of towns and frequencies taken from Emergency Management Victoria's [list of regional emergency broadcasters](https://author.emv.vic.gov.au/node/1078). The footer shows the station and frequency (for a battery radio) and opens its live stream at `abc.net.au/listen/live/<station>`. Within 25 km of a town that also has a community emergency broadcaster (UGFM, Radio Mansfield, Alpine Radio, Radio KLFM, Plenty Valley FM, Radio Eastern) that station is listed too.
+The widget picks the station from your home location using a built-in table of towns and frequencies taken from Emergency Management Victoria's [list of regional emergency broadcasters](https://author.emv.vic.gov.au/node/1078). The footer shows the station and frequency (for a battery radio). Clicking it plays the station's live stream straight away in QuickTime Player — no web player to load — and falls back to the station's web page if QuickTime can't open it. Within 25 km of a town that also has a community emergency broadcaster (UGFM, Radio Mansfield, Alpine Radio, Radio KLFM, Plenty Valley FM, Radio Eastern) that station is listed too and plays the same way.
 
 Coverage is approximate — check the ABC's [frequency finder](https://reception.abc.net.au) for your exact address, and set `ABC_STATION` in the config file if the automatic choice is wrong.
 
