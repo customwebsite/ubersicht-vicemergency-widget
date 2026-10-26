@@ -13,7 +13,10 @@ Fetches directly from the official [VicEmergency](https://emergency.vic.gov.au) 
 - **Desktop alerts** — a macOS notification (with sound) when a Watch & Act or Emergency Warning appears or escalates near you, when your home is inside any warning area, when a Total Fire Ban is declared for your district, or when fire danger is Extreme or Catastrophic. Each alert is sent once
 - **Warning areas** — warning outlines are drawn on the map, and a red banner shows when your home is inside one
 - **Warning advice** — each warning shows its recommended action (e.g. Stay Informed, Leave Now), the start of the advice text and a link to the full warning on VicEmergency
-- **Fire danger rating & Total Fire Ban** — today's and tomorrow's rating for your fire weather district, in the official Australian Fire Danger Rating colours, with a Total Fire Ban flag. Shown even when all is clear
+- **Fire danger rating & Total Fire Ban** — a 4-day fire danger outlook for your fire weather district, in the official Australian Fire Danger Rating colours, with Total Fire Ban flags. Shown even when all is clear; click it to open CFA's page for your district
+- **Heat health & thunderstorm asthma** — a Heat Health Alert or a moderate/high epidemic thunderstorm asthma forecast for your district appears next to the fire danger rating. Nothing is shown on ordinary days
+- **Issue times** — each warning shows when it was issued and each incident when it was last updated, so you can tell fresh news from old
+- **Map symbols** — warnings are drawn as triangles in the Australian Warning System colours, growing with the warning level; incidents are circles styled by status: solid while crews are responding, faded once under control, dashed outline when safe or complete
 - **Feed health** — the footer shows when VicEmergency last published its data; a ⚠️ appears if the data is stale, a backup feed is in use or the earthquake feed is down
 - **CFA district radio** — each CFA incident (in the list and in its map popup) links to the Broadcastify feed of the CFA dispatch channel for that incident's CFA district (listening requires a free Broadcastify account)
 - **Category filter** — click a category chip to show only those incidents in the list and on the map; click it again (or ✕ Show all, the zone name, or an empty part of the widget) to show everything
@@ -110,6 +113,12 @@ const WIDGET_POSITION = { top: "20px", right: "20px" };
 
 ---
 
+### Design Approach
+
+The widget follows the lesson of apps like Watch Duty: show what matters, then get out of the way. Non-events stay hidden (no heat or asthma chip on ordinary days, one quiet line when there is no fire danger rating), finished incidents are faded, and the most serious warnings are drawn largest and on top.
+
+---
+
 ## ⚠️ Important Safety Notice
 
 **This widget is an informational tool only.** It is not a replacement for official emergency warnings and should never be relied upon as your sole source of emergency information.
@@ -137,7 +146,7 @@ Alerts use macOS notifications sent by Übersicht. The first time one appears, m
 
 ### Fire Danger Rating & Total Fire Ban
 
-Today's and tomorrow's ratings and Total Fire Ban status come with the VicEmergency feed, per fire weather district. The district is chosen from your home location using CFA's list of councils in each district ([Find your fire weather district](https://www.cfa.vic.gov.au/warnings-restrictions/find-your-fire-weather-district)); near a district boundary check the district shown and set `FIRE_DISTRICT` in ⚙️ settings if needed. Outside the fire season the rating shows "No rating".
+The 4-day fire danger outlook, Total Fire Ban status, Heat Health Alerts and thunderstorm asthma forecasts come with the VicEmergency feed, per fire weather district. The district is chosen from your home location using CFA's list of councils in each district ([Find your fire weather district](https://www.cfa.vic.gov.au/warnings-restrictions/find-your-fire-weather-district)); near a district boundary check the district shown and set `FIRE_DISTRICT` in ⚙️ settings if needed. When no rating has been issued for any of the four days (usually outside the fire season) a single "No fire danger rating issued" line is shown instead.
 
 ### Emergency Radio
 

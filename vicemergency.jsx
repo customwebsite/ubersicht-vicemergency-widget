@@ -10,7 +10,7 @@
  *   3. Edit HOME_LAT / HOME_LON below to your location
  *   4. Optionally adjust RADIUS_KM and WIDGET_POSITION
  *
- * @version 1.7.0
+ * @version 1.8.0
  * @see https://github.com/customwebsite/vicemergency-ha
  */
 
@@ -185,6 +185,25 @@ function thinRing(ring, maxPts) {
   return out;
 }
 
+// Incident status → how prominently it is drawn (active, controlled, finished)
+const STATUS_ACTIVE = /respond|going|not yet under control|request for assistance|warning|en route|on scene/i;
+const STATUS_FINISHED = /^(safe|patrolled|complete|completed|minor|closed)$/i;
+function statusClass(status) {
+  if (STATUS_FINISHED.test(status || "")) return "finished";
+  if (STATUS_ACTIVE.test(status || "")) return "active";
+  return "controlled";
+}
+
+// "10:42 am" today, otherwise "24 Oct, 5:23 pm" (Melbourne time)
+function whenText(iso) {
+  const t = iso ? new Date(iso) : null;
+  if (!t || isNaN(t)) return "";
+  const tz = { timeZone: "Australia/Melbourne" };
+  const time = t.toLocaleTimeString("en-AU", { ...tz, hour: "numeric", minute: "2-digit" });
+  const sameDay = t.toLocaleDateString("en-CA", tz) === new Date().toLocaleDateString("en-CA", tz);
+  return sameDay ? time : `${t.toLocaleDateString("en-AU", { ...tz, day: "numeric", month: "short" })}, ${time}`;
+}
+
 function htmlToText(html) {
   return String(html || "")
     .replace(/<\/(p|div|li|br)>|<br\s*\/?>/gi, " ")
@@ -312,6 +331,7 @@ function parseGeoJSON(data, cfg) {
       eventType,
       feedType: p.feedType || "incident",
       status: p.status || "",
+      issued: p.updated || p.created || "",
       location: p.location || "",
       sourceOrg: p.sourceOrg || "",
       resources: parseInt(p.resources) || 0,
@@ -759,11 +779,36 @@ function fireInfo(conditions, cfg) {
   } : null;
   const forecasts = Array.isArray(conditions.forecasts) ? conditions.forecasts : [];
   const byDate = (date) => forecasts.find((f) => f.date && melbDate(new Date(f.date)) === date);
+  // Up to four days: today plus the forecast days that follow
+  const days = [day(byDate(today) || conditions, today)];
+  for (const f of forecasts) {
+    const date = f.date ? melbDate(new Date(f.date)) : "";
+    if (date > today && days.length < 4) days.push(day(f, date));
+  }
+  const heat = String((conditions.heat || {})[district] || "");
+  const asthma = String((conditions.asthma || {})[district] || "");
   return {
     district,
-    today: day(byDate(today) || conditions, today),
+    today: days[0],
     tomorrow: day(byDate(tomorrow), tomorrow),
+    days: days.filter(Boolean),
+    // Shown only when they matter (keep the widget quiet otherwise)
+    heat: heat && !/not declared|none/i.test(heat) ? heat : "",
+    asthma: /moderate|high/i.test(asthma) ? asthma : "",
   };
+}
+
+const CFA_FDR_URL = "https://www.cfa.vic.gov.au/warnings-and-restrictions/fire-bans-ratings-and-restrictions/total-fire-bans-fire-danger-ratings";
+// CFA's page for one fire weather district (shows its 4-day outlook)
+function cfaFdrUrl(district) {
+  const slug = String(district || "").toLowerCase().replace(/[^a-z]+/g, "-").replace(/^-|-$/g, "");
+  return slug ? `${CFA_FDR_URL}/${slug}-fire-district` : CFA_FDR_URL;
+}
+
+function dayLabel(date, i) {
+  if (i === 0) return "Today";
+  const d = new Date(date + "T12:00:00");
+  return d.toLocaleDateString("en-AU", { weekday: "short" });
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -974,6 +1019,8 @@ function buildMapHtml(incidents, cfg) {
     const dist = inc.distance;
     return { lat: inc.lat, lon: inc.lon, colour, label, detail, dist, feedType: inc.feedType, resources: inc.resources, group: inc.group,
              polygons: inc.polygons || [], action: inc.action || "", inside: !!inc.homeInside,
+             level: inc.warningLevel || "", state: inc.warningLevel ? "" : statusClass(inc.status),
+             when: inc.issued ? `${inc.warningLevel ? "Issued" : "Updated"} ${whenText(inc.issued)}` : "",
              radio: inc.cfaRadio ? { label: `CFA District ${inc.cfaRadio.district} radio`, url: inc.cfaRadio.url } : null };
   });
 
@@ -1041,6 +1088,8 @@ function buildMapHtml(incidents, cfg) {
   .ve-popup-detail { color: #666; font-size: 11px; }
   .ve-popup-dist { color: #999; font-size: 10px; margin-top: 2px; }
   .ve-popup-radio { margin-top: 4px; font-size: 11px; }
+  .ve-sym { background: none; border: none; }
+  .ve-sym svg { display: block; filter: drop-shadow(0 1px 1.5px rgba(0,0,0,0.35)); }
   .ve-popup-radio a { color: #4A90D9; text-decoration: none; }
   .leaflet-popup-content-wrapper {
     border-radius: 8px !important;
@@ -1108,26 +1157,42 @@ function buildMapHtml(incidents, cfg) {
     });
   });
 
+  // Map symbols in the style of the national warning display:
+  // warnings are triangles that grow with the warning level; incidents are
+  // circles in their category colour — solid while crews are responding,
+  // lighter once under control, hollow and faded once safe.
+  var LEVEL = { advice: { c: '#FFC107', s: 20 }, watch_and_act: { c: '#FF6D00', s: 24 }, emergency_warning: { c: '#D50000', s: 28 } };
+  function symbol(m) {
+    var svg, size;
+    if (m.level) {
+      var L1 = LEVEL[m.level] || LEVEL.advice; size = L1.s;
+      svg = '<svg width="' + size + '" height="' + size + '" viewBox="0 0 24 24">' +
+        '<path d="M12 2.5 L22.5 21 H1.5 Z" fill="' + L1.c + '" stroke="' + (m.inside ? '#FFFFFF' : 'rgba(0,0,0,0.45)') + '" stroke-width="' + (m.inside ? 2.2 : 1.2) + '" stroke-linejoin="round"/>' +
+        '<rect x="11" y="8.5" width="2" height="6.5" rx="1" fill="' + (m.level === 'advice' ? '#1E1E20' : '#FFFFFF') + '"/>' +
+        '<circle cx="12" cy="17.6" r="1.25" fill="' + (m.level === 'advice' ? '#1E1E20' : '#FFFFFF') + '"/></svg>';
+    } else {
+      size = 16;
+      var st = m.state;
+      svg = '<svg width="16" height="16" viewBox="0 0 16 16">' +
+        (st === 'finished'
+          ? '<circle cx="8" cy="8" r="5.5" fill="none" stroke="' + m.colour + '" stroke-width="1.6" stroke-dasharray="2.5 2" opacity="0.7"/>'
+          : '<circle cx="8" cy="8" r="6" fill="' + m.colour + '" fill-opacity="' + (st === 'active' ? 0.95 : 0.4) + '" stroke="' + (st === 'active' ? '#FFFFFF' : m.colour) + '" stroke-width="' + (st === 'active' ? 1.8 : 1.6) + '"/>') +
+        '</svg>';
+    }
+    return L.divIcon({ className: 've-sym', html: svg, iconSize: [size, size], iconAnchor: [size / 2, m.level ? size * 0.6 : size / 2], popupAnchor: [0, -size / 2] });
+  }
+
   // Incident markers — store references for panTo
   var markerRefs = [];
   d.markers.forEach(function(m, idx) {
-    var isWarning = m.feedType && m.feedType !== 'incident';
-    var radius = isWarning ? 10 : 7;
-    var weight = isWarning ? 2.5 : 2;
-
-    var cm = L.circleMarker([m.lat, m.lon], {
-      radius: radius,
-      color: m.colour,
-      fillColor: m.colour,
-      fillOpacity: 0.3,
-      weight: weight,
-    }).addTo(map).bindPopup(
+    var cm = L.marker([m.lat, m.lon], { icon: symbol(m), riseOnHover: true, zIndexOffset: m.level ? 1000 : 0 }).addTo(map).bindPopup(
       '<div class="ve-popup">' +
         '<div class="ve-popup-title" style="color:' + m.colour + '">' + esc(m.label) + '</div>' +
         (m.detail ? '<div class="ve-popup-detail">' + esc(m.detail) + '</div>' : '') +
         (m.action ? '<div class="ve-popup-detail"><b>' + esc(m.action) + '</b></div>' : '') +
         (m.inside ? '<div class="ve-popup-detail" style="color:#D50000"><b>Your location is inside this area</b></div>' : '') +
         (m.radio ? '<div class="ve-popup-radio"><a href="#" data-url="' + esc(m.radio.url) + '">\uD83C\uDFA7 ' + esc(m.radio.label) + '</a></div>' : '') +
+        (m.when ? '<div class="ve-popup-dist">' + esc(m.when) + '</div>' : '') +
         '<div class="ve-popup-dist">' + m.dist + ' km away' + (m.resources > 0 ? ' \\u00b7 ' + m.resources + ' appliance' + (m.resources !== 1 ? 's' : '') : '') + '</div>' +
       '</div>'
     );
@@ -1622,25 +1687,37 @@ export const render = ({ output }) => {
         )}
 
         {fire && (
-          <div className="ve-fire" title={`${fire.district} fire weather district`}>
+          <div className="ve-fire" title={`${fire.district} fire weather district \u2014 click for CFA fire danger ratings`}
+            onClick={(e) => { e.stopPropagation(); run(`open '${cfaFdrUrl(fire.district)}'`); }}>
             <span className="ve-fire-district">
               <FdrDial rating={fire.today && !fire.unavailable ? fire.today.rating : ""} />
               {fire.district}
             </span>
             {fire.unavailable && <span className="ve-fire-na">Fire danger unavailable</span>}
-            {!fire.unavailable && [["Today", fire.today], ["Tomorrow", fire.tomorrow]].map(([label, day]) => {
-              if (!day) return null;
-              const st = FDR_STYLE[day.rating];
-              return (
-                <span key={label} className="ve-fire-day">
-                  <span className="ve-fire-label">{label}</span>
-                  {st
-                    ? <span className="ve-fdr" style={{ background: st.colour, color: st.text }}>{st.label}</span>
-                    : <span className="ve-fdr ve-fdr-none">No rating</span>}
-                  {day.tfb && <span className="ve-tfb">TOTAL FIRE BAN</span>}
-                </span>
-              );
-            })}
+            {!fire.unavailable && fire.days.every((d) => !FDR_STYLE[d.rating] && !d.tfb) && (
+              <span className="ve-fire-na">No fire danger rating issued</span>
+            )}
+            {!fire.unavailable && fire.days.some((d) => FDR_STYLE[d.rating] || d.tfb) && (
+              <span className="ve-fire-days">
+                {fire.days.map((day, i) => {
+                  const st = FDR_STYLE[day.rating];
+                  return (
+                    <span key={day.date} className="ve-fire-day" title={`${dayLabel(day.date, i)} ${day.date}: ${st ? st.label : "No rating"}${day.tfb ? " \u2014 Total Fire Ban" : ""}`}>
+                      <span className={st ? "ve-fdr" : "ve-fdr ve-fdr-none"} style={st ? { background: st.colour, color: st.text } : undefined}>
+                        {dayLabel(day.date, i)} {st ? st.label.charAt(0) : "\u2013"}
+                      </span>
+                      {day.tfb && <span className="ve-tfb">TFB</span>}
+                    </span>
+                  );
+                })}
+              </span>
+            )}
+            {!fire.unavailable && fire.heat && (
+              <span className="ve-health-alert ve-heat" title="Heat Health Alert for this district">{"\uD83C\uDF21\uFE0F"} {fire.heat}</span>
+            )}
+            {!fire.unavailable && fire.asthma && (
+              <span className="ve-health-alert ve-asthma" title="Epidemic thunderstorm asthma forecast">Thunderstorm asthma: {fire.asthma}</span>
+            )}
           </div>
         )}
 
@@ -1705,7 +1782,7 @@ export const render = ({ output }) => {
 
           return (
             <div key={inc.id} data-group={inc.group}
-                 className={`ve-incident ${inc.homeInside ? "ve-incident-inside" : ""} ${_groupFilter && inc.group !== _groupFilter ? "ve-filtered-out" : ""}`}
+                 className={`ve-incident ${inc.homeInside ? "ve-incident-inside" : ""} ${!inc.warningLevel && statusClass(inc.status) === "finished" ? "ve-incident-finished" : ""} ${_groupFilter && inc.group !== _groupFilter ? "ve-filtered-out" : ""}`}
                  onClick={() => panToIncident(inc.lat, inc.lon, idx)}>
               <div className="ve-dot" style={{ background: dot }} />
               <div className="ve-incident-body">
@@ -1735,6 +1812,7 @@ export const render = ({ output }) => {
               <div className="ve-incident-right">
                 {inc.resources > 0 && <span className="ve-incident-resources">{"\uD83D\uDE92"} {inc.resources}</span>}
                 <span className="ve-incident-dist">{inc.homeInside ? "here" : `${inc.distance} km`}</span>
+                {inc.issued && <span className="ve-incident-time" title={inc.warningLevel ? "Issued" : "Last updated"}>{whenText(inc.issued)}</span>}
               </div>
             </div>
           );
@@ -2166,6 +2244,8 @@ export const className = `
   .ve-incident-links { display: flex; flex-wrap: wrap; gap: 2px 12px; }
 
   .ve-incident-inside { background: rgba(213,0,0,0.10); }
+  .ve-incident-finished { opacity: 0.55; }
+  .ve-incident-time { font-size: 10px; color: #636366; white-space: nowrap; }
 
   .ve-inside {
     display: flex;
@@ -2187,18 +2267,23 @@ export const className = `
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 6px 10px;
+    gap: 6px 8px;
     margin-top: 10px;
     font-size: 11px;
     color: #8E8E93;
   }
   .ve-fire-district { color: #C7C7CC; font-weight: 600; display: inline-flex; align-items: center; gap: 5px; }
   .ve-dial { flex-shrink: 0; }
-  .ve-fire-day { display: inline-flex; align-items: center; gap: 4px; }
+  .ve-fire { cursor: pointer; }
+  .ve-fire-days { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+  .ve-fire-day { display: inline-flex; align-items: center; gap: 3px; }
   .ve-fire-label { color: #8E8E93; }
-  .ve-fdr { padding: 1px 7px; border-radius: 10px; font-weight: 700; font-size: 10px; }
+  .ve-fdr { padding: 1px 7px; border-radius: 10px; font-weight: 700; font-size: 10px; white-space: nowrap; }
   .ve-fdr-none { background: rgba(255,255,255,0.06); color: #8E8E93; font-weight: 500; }
   .ve-fire-na { color: #8E8E93; }
+  .ve-health-alert { padding: 1px 7px; border-radius: 10px; font-size: 10px; font-weight: 600; }
+  .ve-heat { background: rgba(229,57,53,0.18); color: #FF8A80; }
+  .ve-asthma { background: rgba(171,71,188,0.20); color: #E1BEE7; }
   .ve-tfb { padding: 1px 6px; border-radius: 4px; background: #D50000; color: #FFFFFF; font-weight: 700; font-size: 10px; }
   .ve-health { cursor: help; }
 
