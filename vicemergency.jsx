@@ -709,6 +709,29 @@ const FDR_STYLE = {
   "CATASTROPHIC": { label: "Catastrophic", colour: "#AD0909", text: "#FFFFFF" },
 };
 
+// Mini fire danger gauge: four segments in rating colours, pointer on the current rating
+const FDR_ORDER = ["MODERATE", "HIGH", "EXTREME", "CATASTROPHIC"];
+
+function FdrDial({ rating, width = 26 }) {
+  const cx = 13, cy = 13, r = 9;
+  const pt = (deg, rad) => [cx + rad * Math.cos(deg * Math.PI / 180), cy - rad * Math.sin(deg * Math.PI / 180)];
+  const level = FDR_ORDER.indexOf(rating);
+  const segs = FDR_ORDER.map((key, i) => {
+    const a1 = 180 - i * 45 - (i === 0 ? 0 : 1.5), a2 = 180 - (i + 1) * 45 + (i === 3 ? 0 : 1.5);
+    const [x1, y1] = pt(a1, r), [x2, y2] = pt(a2, r);
+    return <path key={key} d={`M ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 0 1 ${x2.toFixed(2)} ${y2.toFixed(2)}`}
+                 stroke={FDR_STYLE[key].colour} strokeWidth="4.5" fill="none" opacity={level < 0 ? 0.35 : 1} />;
+  });
+  const [nx, ny] = pt(180 - level * 45 - 22.5, r - 1);
+  return (
+    <svg className="ve-dial" width={width} height={width * 15 / 26} viewBox="0 0 26 15" aria-hidden="true">
+      {segs}
+      {level >= 0 && <line x1={cx} y1={cy} x2={nx.toFixed(2)} y2={ny.toFixed(2)} stroke="#FFFFFF" strokeWidth="1.6" strokeLinecap="round" />}
+      <circle cx={cx} cy={cy} r="1.8" fill={level >= 0 ? "#FFFFFF" : "#8E8E93"} />
+    </svg>
+  );
+}
+
 function pickFireDistrict(cfg) {
   if (cfg.FIRE_DISTRICT && cfg.FIRE_DISTRICT !== "auto" && FIRE_DISTRICTS.includes(cfg.FIRE_DISTRICT)) return cfg.FIRE_DISTRICT;
   let best = null;
@@ -1393,7 +1416,10 @@ export const render = ({ output }) => {
 
         {fire && (
           <div className="ve-fire" title={`${fire.district} fire weather district`}>
-            <span className="ve-fire-district">{"\uD83D\uDD25"} {fire.district}</span>
+            <span className="ve-fire-district">
+              <FdrDial rating={fire.today && !fire.unavailable ? fire.today.rating : ""} />
+              {fire.district}
+            </span>
             {fire.unavailable && <span className="ve-fire-na">Fire danger unavailable</span>}
             {!fire.unavailable && [["Today", fire.today], ["Tomorrow", fire.tomorrow]].map(([label, day]) => {
               if (!day) return null;
@@ -1914,7 +1940,8 @@ export const className = `
     font-size: 11px;
     color: #8E8E93;
   }
-  .ve-fire-district { color: #C7C7CC; font-weight: 600; }
+  .ve-fire-district { color: #C7C7CC; font-weight: 600; display: inline-flex; align-items: center; gap: 5px; }
+  .ve-dial { flex-shrink: 0; }
   .ve-fire-day { display: inline-flex; align-items: center; gap: 4px; }
   .ve-fire-label { color: #8E8E93; }
   .ve-fdr { padding: 1px 7px; border-radius: 10px; font-weight: 700; font-size: 10px; }
