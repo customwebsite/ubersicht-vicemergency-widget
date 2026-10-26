@@ -10,7 +10,7 @@
  *   3. Edit HOME_LAT / HOME_LON below to your location
  *   4. Optionally adjust RADIUS_KM and WIDGET_POSITION
  *
- * @version 1.6.0
+ * @version 1.7.0
  * @see https://github.com/customwebsite/vicemergency-ha
  */
 
@@ -23,7 +23,6 @@ const DEFAULTS = {
   HOME_LON: 144.59,
   RADIUS_KM: 50,
   ZONE_NAME: "Home",
-  MAX_INCIDENTS: 8,
   EXCLUDE_BURN_AREA: true,
   SHOW_MAP: "auto",
   MAP_HEIGHT: 260,
@@ -93,6 +92,7 @@ let _collapsed = false;
 let _prevIncidentCount = undefined;
 let _lastClickedIdx = null;
 let _settingsOpen = false;
+let _groupFilter = null;    // category chip filter (group key) — survives refreshes until cleared
 let _alertedSession = {};   // alerts already sent this session (backs up the state file)
 
 // ─────────────────────────────────────────────────────────────
@@ -767,6 +767,128 @@ function fireInfo(conditions, cfg) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// ▸ CFA RADIO — Broadcastify feed of the CFA district dispatch channel.
+// Each CFA incident gets a link to the feed for its district (nearest listed
+// town). Broadcastify's own player opens in the browser; a direct audio link
+// needs a Broadcastify premium account. Towns per district are those listed on
+// each feed's Broadcastify page (checked October 2026).
+// ─────────────────────────────────────────────────────────────
+
+const CFA_FEEDS = {
+  2: 19012, 4: 19008, 5: 19009, 6: 19010, 7: 19011, 8: 18994, 9: 41819, 10: 19001, 11: 19004,
+  12: 18876, 13: 18999, 14: 18998, 15: 18997, 16: 18996, 17: 18995, 18: 19014, 20: 19013,
+  22: 19007, 23: 19006, 24: 19005, 27: 19003,
+};
+
+// [lat, lon, CFA district]
+const CFA_TOWNS = [
+  // District 2
+  [-36.769, 143.557, 2], [-36.759, 144.283, 2], [-37.204, 144.675, 2], [-37.066, 144.220, 2], [-36.870, 144.796, 2], [-36.859, 143.734, 2],
+  [-36.493, 144.609, 2], [-37.487, 144.590, 2], [-36.615, 144.505, 2], [-36.916, 144.703, 2], [-36.496, 144.391, 2], [-37.247, 144.455, 2],
+  [-37.276, 144.734, 2], [-37.421, 144.564, 2], [-36.996, 144.069, 2], [-37.047, 143.738, 2], [-36.807, 144.752, 2], [-36.535, 144.205, 2],
+  [-37.021, 144.532, 2], [-37.352, 144.737, 2], [-37.330, 144.640, 2], [-37.176, 143.695, 2],
+  // District 4
+  [-37.395, 141.406, 4], [-38.330, 141.434, 4], [-37.585, 141.404, 4], [-37.941, 141.700, 4], [-37.895, 141.268, 4], [-37.813, 141.540, 4],
+  [-38.132, 141.626, 4], [-38.133, 141.802, 4], [-37.947, 141.564, 4], [-37.487, 141.090, 4], [-37.733, 141.531, 4], [-38.078, 141.142, 4],
+  [-38.346, 141.604, 4], [-37.648, 141.464, 4], [-37.739, 141.118, 4], [-37.744, 141.703, 4], [-38.208, 141.785, 4], [-37.926, 141.813, 4],
+  [-37.488, 141.491, 4],
+  // District 5
+  [-37.248, 141.841, 5], [-37.847, 141.810, 5], [-37.840, 142.660, 5], [-38.265, 141.969, 5], [-37.600, 141.690, 5], [-37.899, 142.984, 5],
+  [-37.649, 142.344, 5], [-37.636, 142.547, 5], [-37.743, 142.024, 5], [-37.142, 141.623, 5], [-38.087, 142.279, 5], [-38.045, 142.043, 5],
+  [-37.400, 142.401, 5], [-38.058, 142.793, 5], [-37.876, 142.337, 5], [-38.606, 142.877, 5], [-38.386, 142.237, 5], [-38.383, 142.481, 5],
+  [-38.084, 142.992, 5],
+  // District 6
+  [-38.755, 143.669, 6], [-38.195, 143.640, 6], [-38.637, 143.574, 6], [-38.338, 143.784, 6], [-38.229, 143.137, 6], [-38.857, 143.511, 6],
+  [-38.328, 143.078, 6], [-38.340, 143.586, 6], [-38.030, 143.633, 6], [-37.978, 143.052, 6], [-38.519, 143.716, 6], [-38.526, 143.540, 6],
+  [-37.954, 143.362, 6], [-38.620, 142.995, 6], [-38.693, 143.156, 6], [-38.496, 143.208, 6], [-37.689, 143.332, 6], [-38.247, 142.877, 6],
+  [-38.485, 142.981, 6], [-38.633, 143.890, 6],
+  // District 7
+  [-38.462, 144.107, 7], [-37.911, 144.254, 7], [-38.405, 144.189, 7], [-38.275, 144.488, 7], [-38.397, 143.885, 7], [-38.173, 144.571, 7],
+  [-38.149, 144.360, 7], [-38.170, 144.159, 7], [-38.024, 144.409, 7], [-38.189, 144.464, 7], [-38.541, 143.975, 7], [-38.263, 144.121, 7],
+  [-38.267, 144.525, 7], [-38.116, 144.653, 7], [-38.267, 144.661, 7], [-38.327, 144.313, 7], [-38.242, 143.986, 7],
+  // District 8
+  [-38.040, 145.345, 8], [-38.097, 145.721, 8], [-38.450, 145.239, 8], [-38.100, 145.281, 8], [-37.990, 145.210, 8], [-38.146, 145.126, 8],
+  [-38.350, 145.389, 8], [-38.306, 145.186, 8], [-38.266, 145.563, 8], [-38.220, 145.041, 8], [-38.081, 145.486, 8], [-38.323, 144.700, 8],
+  [-38.371, 144.910, 8], [-38.214, 145.382, 8], [-38.604, 145.591, 8],
+  // District 9
+  [-38.297, 146.018, 9], [-38.136, 145.856, 9], [-38.525, 146.120, 9], [-37.976, 146.380, 9], [-38.694, 146.084, 9], [-38.651, 146.202, 9],
+  [-38.633, 145.728, 9], [-38.559, 145.953, 9], [-38.432, 145.824, 9], [-38.476, 145.946, 9], [-38.370, 145.707, 9], [-38.126, 145.765, 9],
+  [-38.528, 146.206, 9], [-38.401, 146.159, 9], [-38.010, 145.994, 9], [-38.507, 146.020, 9], [-38.122, 146.009, 9], [-37.835, 145.944, 9],
+  [-38.340, 145.763, 9], [-38.773, 145.917, 9], [-38.304, 146.181, 9], [-38.320, 145.972, 9], [-38.159, 145.934, 9], [-38.666, 146.436, 9],
+  // District 10
+  [-37.322, 147.333, 10], [-37.914, 146.756, 10], [-37.982, 146.785, 10], [-37.603, 146.570, 10], [-38.171, 147.086, 10], [-37.965, 146.976, 10],
+  [-38.015, 147.405, 10], [-38.691, 146.671, 10], [-38.185, 146.827, 10], [-38.109, 147.066, 10], [-38.332, 147.161, 10], [-38.278, 147.039, 10],
+  [-37.946, 147.115, 10], [-38.537, 146.899, 10], [-38.562, 146.676, 10],
+  // District 11
+  [-37.825, 147.630, 11], [-37.640, 148.887, 11], [-36.890, 147.802, 11], [-37.188, 148.891, 11], [-37.975, 147.439, 11], [-37.149, 148.648, 11],
+  [-37.499, 148.172, 11], [-37.588, 149.162, 11], [-37.192, 148.226, 11], [-37.751, 147.317, 11], [-37.878, 148.002, 11], [-37.560, 149.757, 11],
+  [-37.764, 148.732, 11], [-37.866, 147.809, 11], [-37.100, 147.592, 11], [-37.704, 148.455, 11], [-37.911, 147.720, 11], [-37.264, 147.724, 11],
+  // District 12
+  [-37.192, 145.711, 12], [-37.216, 145.053, 12], [-37.233, 145.910, 12], [-37.330, 145.303, 12], [-37.292, 144.951, 12], [-37.533, 145.341, 12],
+  [-37.504, 145.881, 12], [-37.510, 145.749, 12], [-37.542, 145.639, 12], [-37.001, 145.036, 12], [-37.024, 145.136, 12], [-37.350, 145.726, 12],
+  [-37.043, 144.799, 12], [-37.414, 144.977, 12], [-37.101, 145.617, 12], [-37.213, 145.422, 12],
+  // District 13
+  [-37.842, 145.268, 13], [-37.600, 145.416, 13], [-37.882, 145.295, 13], [-37.654, 145.516, 13], [-37.842, 145.593, 13], [-37.757, 145.346, 13],
+  [-37.887, 145.475, 13], [-37.908, 145.357, 13], [-37.810, 145.342, 13], [-37.785, 145.313, 13], [-37.836, 145.350, 13], [-37.963, 145.362, 13],
+  [-37.856, 145.365, 13], [-37.863, 145.751, 13], [-37.670, 145.902, 13], [-37.924, 145.245, 13], [-37.903, 145.218, 13], [-37.754, 145.689, 13],
+  [-37.738, 145.224, 13], [-37.657, 145.374, 13], [-37.782, 145.615, 13], [-37.810, 145.510, 13],
+  // District 14
+  [-37.584, 145.207, 14], [-37.734, 144.737, 14], [-37.653, 145.321, 14], [-37.602, 144.943, 14], [-37.714, 145.148, 14], [-37.652, 145.032, 14],
+  [-37.791, 144.556, 14], [-37.883, 144.701, 14], [-37.639, 145.192, 14], [-37.692, 145.216, 14], [-37.887, 144.472, 7], [-37.684, 144.583, 14],
+  [-37.667, 145.112, 14], [-37.906, 144.753, 14], [-37.580, 144.730, 14], [-37.607, 144.594, 14], [-37.900, 144.661, 14], [-37.512, 145.118, 14],
+  // District 15
+  [-37.675, 144.437, 15], [-37.604, 144.214, 15], [-37.562, 143.861, 15], [-38.044, 144.174, 15], [-37.650, 143.884, 15], [-37.470, 143.655, 15],
+  [-37.206, 143.960, 15], [-37.288, 143.780, 15], [-37.425, 143.894, 15], [-37.341, 144.147, 15], [-37.316, 144.147, 15], [-37.694, 143.562, 15],
+  [-37.844, 144.075, 15], [-37.902, 143.720, 15], [-38.012, 143.973, 15], [-37.390, 144.326, 15],
+  // District 16
+  [-37.283, 142.932, 16], [-37.089, 143.474, 16], [-37.429, 143.383, 16], [-36.921, 142.645, 16], [-37.699, 142.847, 16], [-37.276, 143.516, 16],
+  [-37.422, 142.846, 16], [-37.302, 142.766, 16], [-36.900, 143.114, 16], [-36.450, 142.908, 16], [-36.615, 143.255, 16], [-37.059, 142.775, 16],
+  [-37.544, 142.740, 16],
+  // District 17
+  [-36.979, 141.088, 17], [-37.063, 142.197, 17], [-36.904, 142.495, 17], [-37.342, 141.188, 17], [-36.455, 142.027, 17], [-36.715, 142.202, 17],
+  [-36.119, 141.995, 17], [-36.380, 141.242, 17], [-36.461, 142.587, 17], [-36.741, 141.942, 17], [-36.693, 141.019, 17], [-36.333, 141.649, 17],
+  [-35.898, 141.996, 17], [-36.642, 142.685, 17], [-37.120, 142.016, 17], [-36.029, 141.108, 17], [-36.251, 142.395, 17],
+  // District 18
+  [-35.983, 142.916, 18], [-36.269, 143.352, 18], [-36.370, 142.983, 18], [-35.730, 142.364, 18], [-34.195, 142.150, 18], [-35.263, 141.183, 18],
+  [-35.069, 142.316, 18], [-34.584, 142.774, 18], [-35.506, 142.851, 18], [-35.339, 143.559, 18], [-36.079, 143.228, 18],
+  // District 20
+  [-36.118, 143.722, 20], [-35.808, 144.220, 20], [-36.128, 144.752, 20], [-35.957, 144.367, 20], [-36.573, 143.869, 20], [-35.734, 143.920, 20],
+  [-36.313, 145.048, 20], [-36.215, 144.236, 20], [-36.054, 144.116, 20], [-35.850, 143.521, 20], [-36.586, 145.016, 20], [-36.445, 144.983, 20],
+  [-36.775, 143.831, 20], [-36.720, 144.680, 20], [-36.419, 143.614, 20], [-36.209, 145.069, 20],
+  // District 22
+  [-36.016, 144.961, 22], [-36.033, 146.166, 22], [-35.920, 145.648, 22], [-36.333, 145.710, 22], [-36.773, 145.583, 22], [-36.626, 145.181, 22],
+  [-36.792, 145.214, 22], [-36.058, 145.207, 22], [-36.093, 145.442, 22], [-35.962, 145.126, 22], [-36.383, 145.399, 22], [-36.877, 145.766, 22],
+  [-35.905, 145.449, 22], [-36.243, 145.214, 22], [-36.637, 145.718, 22], [-36.014, 146.006, 22],
+  // District 23
+  [-36.552, 145.983, 23], [-37.011, 145.865, 23], [-36.321, 145.903, 23], [-36.312, 146.531, 23], [-36.462, 146.226, 23], [-37.303, 146.138, 23],
+  [-37.052, 146.088, 23], [-36.981, 145.708, 23], [-37.269, 146.401, 23], [-36.210, 146.478, 23], [-36.356, 146.323, 23], [-36.751, 146.418, 23],
+  [-37.560, 146.342, 23],
+  // District 24
+  [-36.359, 146.687, 24], [-36.729, 146.961, 24], [-36.151, 146.609, 24], [-36.186, 147.897, 24], [-36.612, 147.614, 24], [-36.475, 147.002, 24],
+  [-36.879, 147.244, 24], [-36.270, 147.013, 24], [-36.625, 147.328, 24], [-36.749, 147.229, 24], [-36.975, 147.128, 24], [-36.561, 146.724, 24],
+  [-36.054, 146.460, 24], [-36.217, 147.178, 24], [-35.964, 147.736, 24], [-36.121, 146.888, 24], [-36.330, 146.852, 24],
+  // District 27
+  [-38.381, 146.272, 27], [-38.313, 146.420, 27], [-38.127, 146.642, 27], [-38.271, 146.479, 27], [-38.177, 146.262, 27], [-38.236, 146.398, 27],
+  [-38.035, 146.572, 27], [-38.195, 146.538, 27], [-38.129, 146.379, 27], [-38.335, 146.301, 27],
+];
+
+function cfaDistrictAt(lat, lon) {
+  let best = null;
+  for (const [tlat, tlon, district] of CFA_TOWNS) {
+    const d = haversine(lat, lon, tlat, tlon);
+    if (!best || d < best.d) best = { d, district };
+  }
+  return best && best.d <= 60 ? best.district : null;
+}
+
+function cfaRadio(inc) {
+  if (!/CFA/i.test(inc.sourceOrg || "")) return null;
+  const district = cfaDistrictAt(inc.lat, inc.lon);
+  if (!district || !CFA_FEEDS[district]) return null;
+  return { district, url: `https://www.broadcastify.com/listen/feed/${CFA_FEEDS[district]}` };
+}
+
+// ─────────────────────────────────────────────────────────────
 // ▸ ALERTS — macOS notification for new or escalated warnings near home,
 // warnings covering home, Total Fire Bans and Extreme/Catastrophic ratings.
 // What has been alerted is kept in ~/.vicemergency-alerted.json.
@@ -850,17 +972,20 @@ function buildMapHtml(incidents, cfg) {
     const label = inc.eventType || inc.category1 || inc.title || "Incident";
     const detail = inc.location || "";
     const dist = inc.distance;
-    return { lat: inc.lat, lon: inc.lon, colour, label, detail, dist, feedType: inc.feedType, resources: inc.resources,
-             polygons: inc.polygons || [], action: inc.action || "", inside: !!inc.homeInside };
+    return { lat: inc.lat, lon: inc.lon, colour, label, detail, dist, feedType: inc.feedType, resources: inc.resources, group: inc.group,
+             polygons: inc.polygons || [], action: inc.action || "", inside: !!inc.homeInside,
+             radio: inc.cfaRadio ? { label: `CFA District ${inc.cfaRadio.district} radio`, url: inc.cfaRadio.url } : null };
   });
 
-  const dataJson = JSON.stringify({ home: { lat: cfg.HOME_LAT, lon: cfg.HOME_LON }, markers, zoom: cfg.MAP_ZOOM })
+  const dataJson = JSON.stringify({ home: { lat: cfg.HOME_LAT, lon: cfg.HOME_LON }, markers, zoom: cfg.MAP_ZOOM, filter: _groupFilter })
     .replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
 
   const isLight = cfg.MAP_THEME === "light";
-  const tileUrl = isLight
-    ? 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png'
-    : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+  // Esri Canvas basemaps (no API key needed): plain base plus a labels layer on top.
+  // (CARTO basemaps started requiring an API key in 2026.)
+  const esri = 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/';
+  const tileUrl = esri + (isLight ? 'World_Light_Gray_Base' : 'World_Dark_Gray_Base') + '/MapServer/tile/{z}/{y}/{x}';
+  const labelUrl = esri + (isLight ? 'World_Light_Gray_Reference' : 'World_Dark_Gray_Reference') + '/MapServer/tile/{z}/{y}/{x}';
   const mapBg = isLight ? '#f2efe9' : '#1e1e20';
   const attrBg = isLight ? 'rgba(255,255,255,0.8)' : 'rgba(30,30,32,0.7)';
   const attrColor = isLight ? '#666' : '#8E8E93';
@@ -915,6 +1040,8 @@ function buildMapHtml(incidents, cfg) {
   .ve-popup-title { font-weight: 600; margin-bottom: 2px; }
   .ve-popup-detail { color: #666; font-size: 11px; }
   .ve-popup-dist { color: #999; font-size: 10px; margin-top: 2px; }
+  .ve-popup-radio { margin-top: 4px; font-size: 11px; }
+  .ve-popup-radio a { color: #4A90D9; text-decoration: none; }
   .leaflet-popup-content-wrapper {
     border-radius: 8px !important;
     box-shadow: 0 3px 14px rgba(0,0,0,0.3) !important;
@@ -935,10 +1062,10 @@ function buildMapHtml(incidents, cfg) {
   });
 
   L.tileLayer('${tileUrl}', {
-    attribution: '\\u00a9 <a href="https://www.openstreetmap.org/copyright">OSM</a>, \\u00a9 <a href="https://carto.com/">CARTO</a>' + (${cfg.SHOW_EARTHQUAKES ? 'true' : 'false'} ? ', quakes \u00a9 Geoscience Australia' : ''),
-    subdomains: 'abcd',
-    maxZoom: 19
+    attribution: 'Tiles \\u00a9 Esri, HERE, Garmin, \\u00a9 <a href="https://www.openstreetmap.org/copyright">OSM</a>' + (${cfg.SHOW_EARTHQUAKES ? 'true' : 'false'} ? ', quakes \u00a9 Geoscience Australia' : ''),
+    maxZoom: 16
   }).addTo(map);
+  L.tileLayer('${labelUrl}', { maxZoom: 16, pane: 'overlayPane' }).addTo(map);
 
   // Home marker — blue ring with label
   L.circleMarker([d.home.lat, d.home.lon], {
@@ -972,10 +1099,12 @@ function buildMapHtml(incidents, cfg) {
   function esc(t) { return String(t == null ? '' : t).replace(/[&<>"']/g, function(c) { return '&#' + c.charCodeAt(0) + ';'; }); }
 
   // Warning areas — outlines under the markers
-  d.markers.forEach(function(m) {
+  var polyRefs = [];
+  d.markers.forEach(function(m, idx) {
+    polyRefs[idx] = [];
     (m.polygons || []).forEach(function(ring) {
       if (ring.length < 3) return;
-      L.polygon(ring, { color: m.colour, weight: 1.5, fillColor: m.colour, fillOpacity: m.inside ? 0.22 : 0.12, interactive: false }).addTo(map);
+      polyRefs[idx].push(L.polygon(ring, { color: m.colour, weight: 1.5, fillColor: m.colour, fillOpacity: m.inside ? 0.22 : 0.12, interactive: false }).addTo(map));
     });
   });
 
@@ -998,10 +1127,42 @@ function buildMapHtml(incidents, cfg) {
         (m.detail ? '<div class="ve-popup-detail">' + esc(m.detail) + '</div>' : '') +
         (m.action ? '<div class="ve-popup-detail"><b>' + esc(m.action) + '</b></div>' : '') +
         (m.inside ? '<div class="ve-popup-detail" style="color:#D50000"><b>Your location is inside this area</b></div>' : '') +
+        (m.radio ? '<div class="ve-popup-radio"><a href="#" data-url="' + esc(m.radio.url) + '">\uD83C\uDFA7 ' + esc(m.radio.label) + '</a></div>' : '') +
         '<div class="ve-popup-dist">' + m.dist + ' km away' + (m.resources > 0 ? ' \\u00b7 ' + m.resources + ' appliance' + (m.resources !== 1 ? 's' : '') : '') + '</div>' +
       '</div>'
     );
     markerRefs.push(cm);
+  });
+
+  // Category filter: show only one group's markers and areas, and fit the map to them
+  var currentFilter = null;
+  function visible(m) { return !currentFilter || m.group === currentFilter; }
+  function fitVisible() {
+    var pts = [[d.home.lat, d.home.lon]];
+    d.markers.forEach(function(m) { if (visible(m)) pts.push([m.lat, m.lon]); });
+    if (pts.length > 1) map.fitBounds(pts, { padding: [30, 30], maxZoom: 13 });
+    else map.setView([d.home.lat, d.home.lon], d.zoom);
+  }
+  function applyFilter(group, refit) {
+    currentFilter = group || null;
+    map.closePopup();
+    d.markers.forEach(function(m, idx) {
+      var show = visible(m);
+      [markerRefs[idx]].concat(polyRefs[idx] || []).forEach(function(layer) {
+        if (!layer) return;
+        if (show && !map.hasLayer(layer)) layer.addTo(map);
+        if (!show && map.hasLayer(layer)) map.removeLayer(layer);
+      });
+    });
+    if (refit) fitVisible();
+  }
+
+  // Radio links in popups: ask the widget to open them (the map frame can't open the browser)
+  document.addEventListener('click', function(e) {
+    var a = e.target.closest && e.target.closest('a[data-url]');
+    if (!a) return;
+    e.preventDefault();
+    window.parent.postMessage({ type: 'openUrl', url: a.getAttribute('data-url') }, '*');
   });
 
   // Listen for panTo messages from parent widget
@@ -1017,13 +1178,10 @@ function buildMapHtml(incidents, cfg) {
     }
     if (e.data && e.data.type === 'resetView') {
       map.closePopup();
-      if (d.markers.length > 0) {
-        var pts = [[d.home.lat, d.home.lon]];
-        d.markers.forEach(function(m2) { pts.push([m2.lat, m2.lon]); });
-        map.fitBounds(pts, { padding: [30, 30], maxZoom: 13 });
-      } else {
-        map.setView([d.home.lat, d.home.lon], d.zoom, { animate: true });
-      }
+      fitVisible();
+    }
+    if (e.data && e.data.type === 'filter') {
+      applyFilter(e.data.group, true);
     }
     if (e.data && e.data.type === 'enablePicker') {
       pickerEnabled = true;
@@ -1062,6 +1220,7 @@ function buildMapHtml(incidents, cfg) {
     });
     map.fitBounds(points, { padding: [30, 30], maxZoom: 13 });
   }
+  if (d.filter) applyFilter(d.filter, true);
 })();
 <\/script>
 </body>
@@ -1131,6 +1290,7 @@ export const render = ({ output }) => {
   const updated = hhmm(now);
   const radio = pickRadio(cfg);
   const fire = error ? null : fireInfo(conditions, cfg);
+  for (const inc of incidents) inc.cfaRadio = cfaRadio(inc);
   const insideWarnings = incidents.filter((i) => i.homeInside);
 
   // Feed health: when VicEmergency last published, and which feeds failed
@@ -1176,8 +1336,9 @@ export const render = ({ output }) => {
   const nearest = incidents.length > 0 ? incidents[0] : null;
 
   // Shown incidents
-  const shown = incidents.slice(0, cfg.MAX_INCIDENTS);
-  const remaining = incidents.length - shown.length;
+  // A filter on a group that no longer has incidents is dropped
+  if (_groupFilter && !incidents.some((i) => i.group === _groupFilter)) _groupFilter = null;
+  const shown = incidents;   // every incident is listed; the list scrolls
 
   // Map HTML
   const showMap = cfg.SHOW_MAP === "auto" ? incidents.length > 0 : !!cfg.SHOW_MAP;
@@ -1196,7 +1357,49 @@ export const render = ({ output }) => {
     }
   };
 
+  // Category filter — click a chip to show only that group, click it again
+  // (or an empty part of the widget, or the zone name) to show everything
+  const applyGroupFilter = (widget) => {
+    if (!widget) return;
+    widget.classList.toggle('ve-filtering', !!_groupFilter);
+    widget.querySelectorAll('.ve-chip').forEach((el) => {
+      el.classList.toggle('ve-chip-selected', !!_groupFilter && el.dataset.group === _groupFilter);
+      el.classList.toggle('ve-chip-dimmed', !!_groupFilter && el.dataset.group !== _groupFilter);
+    });
+    widget.querySelectorAll('.ve-incident').forEach((el) => {
+      el.classList.toggle('ve-filtered-out', !!_groupFilter && el.dataset.group !== _groupFilter);
+    });
+    const bar = widget.querySelector('.ve-filter-bar');
+    if (bar) {
+      bar.style.display = _groupFilter ? 'flex' : 'none';
+      const name = bar.querySelector('.ve-filter-name');
+      if (name) name.textContent = _groupFilter ? (GROUP_META[_groupFilter] || {}).label || _groupFilter : '';
+    }
+    const iframe = widget.querySelector('.ve-map-iframe');
+    if (iframe && iframe.contentWindow) iframe.contentWindow.postMessage({ type: 'filter', group: _groupFilter }, '*');
+    _lastClickedIdx = null;
+  };
+
+  const setGroupFilter = (e, group) => {
+    e.stopPropagation();
+    _groupFilter = group;
+    applyGroupFilter(e.target.closest('.ve-widget'));
+  };
+
+  const clickChip = (e, group) => setGroupFilter(e, _groupFilter === group ? null : group);
+
+  // Clicks on empty parts of the widget clear the filter; rows, map, links and controls keep it
+  const clickWidget = (e) => {
+    if (!_groupFilter) return;
+    if (e.target.closest('.ve-chip, .ve-incident, .ve-map-container, .ve-settings, .ve-settings-btn, .ve-toggle, .ve-footer-link, .ve-nearest, .ve-inside, input, select')) return;
+    setGroupFilter(e, null);
+  };
+
   const resetMapView = () => {
+    if (_groupFilter) {
+      _groupFilter = null;
+      applyGroupFilter(document.querySelector('.ve-widget'));
+    }
     const iframe = document.querySelector('.ve-map-iframe');
     if (iframe && iframe.contentWindow) {
       iframe.contentWindow.postMessage({ type: 'resetView' }, '*');
@@ -1285,6 +1488,9 @@ export const render = ({ output }) => {
   if (!window._vePickerListening) {
     window._vePickerListening = true;
     window.addEventListener('message', function(e) {
+      if (e.data && e.data.type === 'openUrl' && /^https:\/\/www\.broadcastify\.com\/listen\/feed\/\d+$/.test(e.data.url || "")) {
+        run(`open '${e.data.url}'`);
+      }
       if (e.data && e.data.type === 'locationPicked') {
         const latInput = document.querySelector('#ve-cfg-lat');
         const lonInput = document.querySelector('#ve-cfg-lon');
@@ -1307,7 +1513,6 @@ export const render = ({ output }) => {
       HOME_LON: parseFloat(val('lon')) || DEFAULTS.HOME_LON,
       RADIUS_KM: parseInt(val('radius')) || DEFAULTS.RADIUS_KM,
       ZONE_NAME: val('zone') || DEFAULTS.ZONE_NAME,
-      MAX_INCIDENTS: parseInt(val('max')) || DEFAULTS.MAX_INCIDENTS,
       MAP_HEIGHT: parseInt(val('height')) || DEFAULTS.MAP_HEIGHT,
       MAP_ZOOM: parseInt(val('zoom')) || DEFAULTS.MAP_ZOOM,
       MAP_THEME: val('theme') || DEFAULTS.MAP_THEME,
@@ -1354,6 +1559,8 @@ export const render = ({ output }) => {
       if (iframe && iframe.contentWindow) {
         iframe.contentWindow.postMessage({ type: 'disablePicker' }, '*');
       }
+      // Reload now with the new settings instead of waiting for the next 2-minute refresh
+      run(`osascript -e 'tell application id "tracesOf.Uebersicht" to refresh widget id "vicemergency-jsx"' 2>/dev/null || osascript -e 'tell application id "tracesOf.Uebersicht" to refresh'`);
     });
   };
 
@@ -1374,7 +1581,7 @@ export const render = ({ output }) => {
   }
 
   return (
-    <div className={`ve-widget ${_collapsed ? "ve-collapsed" : ""}`}>
+    <div className={`ve-widget ${_collapsed ? "ve-collapsed" : ""} ${_groupFilter ? "ve-filtering" : ""}`} onClick={clickWidget}>
       {/* Header */}
       <div className="ve-header">
         <div className="ve-title-row">
@@ -1457,14 +1664,22 @@ export const render = ({ output }) => {
           const count = groupCounts[key] || 0;
           const active = count > 0;
           return (
-            <div key={key} className={`ve-chip ${active ? "ve-chip-active" : ""}`}
-                 style={active ? { borderColor: meta.colour, color: meta.colour } : {}}>
+            <div key={key} data-group={key}
+                 className={`ve-chip ${active ? "ve-chip-active" : ""} ${_groupFilter === key ? "ve-chip-selected" : ""} ${_groupFilter && _groupFilter !== key ? "ve-chip-dimmed" : ""}`}
+                 style={active ? { borderColor: meta.colour, color: meta.colour } : {}}
+                 title={active ? (_groupFilter === key ? "Show all" : `Show only ${meta.label}`) : ""}
+                 onClick={active ? (e) => clickChip(e, key) : undefined}>
               <span className="ve-chip-emoji">{meta.emoji}</span>
               <span className="ve-chip-count">{count}</span>
               <span className="ve-chip-label">{meta.label}</span>
             </div>
           );
         })}
+      </div>
+
+      <div className="ve-filter-bar" style={{ display: _groupFilter ? "flex" : "none" }}>
+        <span>Showing <strong className="ve-filter-name">{_groupFilter ? (GROUP_META[_groupFilter] || {}).label : ""}</strong> only</span>
+        <span className="ve-filter-clear" onClick={(e) => setGroupFilter(e, null)}>{"\u2715"} Show all</span>
       </div>
 
       {/* Incident list */}
@@ -1489,7 +1704,9 @@ export const render = ({ output }) => {
           const openLink = (e) => { e.stopPropagation(); run(`open ${shq(inc.link)}`); };
 
           return (
-            <div key={inc.id} className={`ve-incident ${inc.homeInside ? "ve-incident-inside" : ""}`} onClick={() => panToIncident(inc.lat, inc.lon, idx)}>
+            <div key={inc.id} data-group={inc.group}
+                 className={`ve-incident ${inc.homeInside ? "ve-incident-inside" : ""} ${_groupFilter && inc.group !== _groupFilter ? "ve-filtered-out" : ""}`}
+                 onClick={() => panToIncident(inc.lat, inc.lon, idx)}>
               <div className="ve-dot" style={{ background: dot }} />
               <div className="ve-incident-body">
                 <div className="ve-incident-title">{displayTitle}</div>
@@ -1499,10 +1716,20 @@ export const render = ({ output }) => {
                   {inc.action && <span className="ve-incident-action">{inc.action}</span>}
                 </div>
                 {inc.advice && <div className="ve-incident-advice">{inc.advice}</div>}
-                {inc.link && (
-                  <span className="ve-incident-link" onClick={openLink}>
-                    {isWarning ? "Full warning \u2197" : "More info \u2197"}
-                  </span>
+                {(inc.link || inc.cfaRadio) && (
+                  <div className="ve-incident-links">
+                    {inc.link && (
+                      <span className="ve-incident-link" onClick={openLink}>
+                        {isWarning ? "Full warning \u2197" : "More info \u2197"}
+                      </span>
+                    )}
+                    {inc.cfaRadio && (
+                      <span className="ve-incident-link" title="CFA dispatch radio for this district (Broadcastify)"
+                            onClick={(e) => { e.stopPropagation(); run(`open '${inc.cfaRadio.url}'`); }}>
+                        {"\uD83C\uDFA7"} CFA District {inc.cfaRadio.district} radio
+                      </span>
+                    )}
+                  </div>
                 )}
               </div>
               <div className="ve-incident-right">
@@ -1513,9 +1740,6 @@ export const render = ({ output }) => {
           );
         })}
 
-        {remaining > 0 && (
-          <div className="ve-more">+ {remaining} more</div>
-        )}
       </div>
 
       {/* Map — always in DOM, visibility managed by toggleSettings and inline style */}
@@ -1551,8 +1775,6 @@ export const render = ({ output }) => {
           <label>Radius (km)</label>
           <input id="ve-cfg-radius" type="number" min="1" max="500" defaultValue={cfg.RADIUS_KM} />
 
-          <label>Max incidents</label>
-          <input id="ve-cfg-max" type="number" min="1" max="50" defaultValue={cfg.MAX_INCIDENTS} />
 
           <label>Map height (px)</label>
           <input id="ve-cfg-height" type="number" min="100" max="600" defaultValue={cfg.MAP_HEIGHT} />
@@ -1827,6 +2049,25 @@ export const className = `
     transition: all 0.2s ease;
   }
 
+  .ve-chip-active { cursor: pointer; }
+  .ve-chip-active:hover { background: rgba(255,255,255,0.10); }
+  .ve-chip-selected { background: rgba(255,255,255,0.14) !important; box-shadow: inset 0 0 0 1px currentColor; }
+  .ve-chip-dimmed { opacity: 0.4; }
+
+  .ve-incident.ve-filtered-out { display: none !important; }
+
+  .ve-filter-bar {
+    justify-content: space-between;
+    align-items: center;
+    margin: -4px 0 8px;
+    font-size: 11px;
+    color: #8E8E93;
+  }
+  .ve-filter-bar strong { color: #E0E0E0; }
+  .ve-filter-clear { color: #4A90D9; cursor: pointer; }
+  .ve-filter-clear:hover { color: #7DB3F0; }
+  .ve-collapsed .ve-filter-bar { display: none !important; }
+
   .ve-chip-active {
     background: rgba(255,255,255,0.06);
     border-color: currentColor;
@@ -1836,7 +2077,17 @@ export const className = `
   .ve-chip-count { font-weight: 700; font-size: 13px; min-width: 10px; }
   .ve-chip-label { font-size: 10px; opacity: 0.8; }
 
-  .ve-list { margin-bottom: 10px; }
+  /* The list scrolls on its own so the map below always stays on screen */
+  .ve-list {
+    margin-bottom: 10px;
+    max-height: min(38vh, 340px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-right: 2px;
+  }
+  .ve-list::-webkit-scrollbar { width: 6px; }
+  .ve-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.18); border-radius: 3px; }
+  .ve-list::-webkit-scrollbar-track { background: transparent; }
 
   .ve-empty {
     text-align: center;
@@ -1912,6 +2163,7 @@ export const className = `
     cursor: pointer;
   }
   .ve-incident-link:hover { color: #7DB3F0; }
+  .ve-incident-links { display: flex; flex-wrap: wrap; gap: 2px 12px; }
 
   .ve-incident-inside { background: rgba(213,0,0,0.10); }
 

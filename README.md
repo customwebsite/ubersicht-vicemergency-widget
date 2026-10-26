@@ -15,8 +15,11 @@ Fetches directly from the official [VicEmergency](https://emergency.vic.gov.au) 
 - **Warning advice** — each warning shows its recommended action (e.g. Stay Informed, Leave Now), the start of the advice text and a link to the full warning on VicEmergency
 - **Fire danger rating & Total Fire Ban** — today's and tomorrow's rating for your fire weather district, in the official Australian Fire Danger Rating colours, with a Total Fire Ban flag. Shown even when all is clear
 - **Feed health** — the footer shows when VicEmergency last published its data; a ⚠️ appears if the data is stale, a backup feed is in use or the earthquake feed is down
+- **CFA district radio** — each CFA incident (in the list and in its map popup) links to the Broadcastify feed of the CFA dispatch channel for that incident's CFA district
+- **Category filter** — click a category chip to show only those incidents in the list and on the map; click it again (or ✕ Show all, the zone name, or an empty part of the widget) to show everything
+- **Scrolling incident list** — the list scrolls on its own so the map always stays on screen
 - **Live incident tracking** — fires, floods, storms, transport, hazmat, outages within a configurable radius
-- **Interactive Leaflet map** — dark or daylight CARTO tiles, clickable incident markers with popups, dashed watch zone ring
+- **Interactive Leaflet map** — light or dark Esri map (no API key needed), clickable incident markers with popups, warning-area outlines, dashed watch zone ring
 - **Earthquakes** — recent quakes from Geoscience Australia within your radius, with magnitude, time since the quake and number of "felt" reports
 - **Australian Warning System** — tracks Advice, Watch & Act, and Emergency Warning levels with colour-coded badges
 - **7 category groups** — Fire, Flood, Storm, Transport, Hazmat, Outages, Quake with emoji chips and counts
@@ -72,12 +75,11 @@ All settings are accessible via the ⚙️ gear icon or the config file at `~/.v
 | `HOME_LAT` / `HOME_LON` | `-37.40` / `144.59` | Your location (click the map to set) |
 | `RADIUS_KM` | `50` | Monitoring radius in kilometres |
 | `ZONE_NAME` | `"Home"` | Title displayed on the widget |
-| `MAX_INCIDENTS` | `8` | Maximum incidents shown in list |
 | `EXCLUDE_BURN_AREA` | `true` | Filter out historical burn boundaries |
 | `SHOW_MAP` | `"auto"` | `"auto"` (when incidents), `true` (always), `false` (never) |
 | `MAP_HEIGHT` | `260` | Map height in pixels |
 | `MAP_ZOOM` | `10` | Default zoom level |
-| `MAP_THEME` | `"light"` | `"light"` (CARTO Voyager) or `"dark"` (CARTO Dark Matter) |
+| `MAP_THEME` | `"light"` | `"light"` (Esri Light Gray) or `"dark"` (Esri Dark Gray) |
 | `HIDE_WHEN_CLEAR` | `false` | `true` hides the widget entirely when no incidents |
 | `SHOW_EARTHQUAKES` | `true` | Include recent earthquakes from Geoscience Australia |
 | `QUAKE_MIN_MAG` | `2.0` | Smallest earthquake magnitude to show |
@@ -102,7 +104,7 @@ const WIDGET_POSITION = { top: "20px", right: "20px" };
 
 **When incidents exist** — auto-expands to show nearest incident bar, category chips with counts, incident list sorted by distance, and the interactive map. Tap an incident to zoom the map to it. Tap it again (or click the zone name) to zoom back out.
 
-**Settings** — click the ⚙️ gear icon. The map appears with a crosshair cursor — click to drop a pin and auto-fill lat/lon. Save writes to `~/.vicemergency-config.json` and takes effect on the next refresh cycle (2 minutes) or immediately via Übersicht → Refresh All Widgets.
+**Settings** — click the ⚙️ gear icon. The map appears with a crosshair cursor — click to drop a pin and auto-fill lat/lon. Save writes to `~/.vicemergency-config.json` and the widget reloads straight away with the new settings.
 
 **Foreground / Background** — use Übersicht's built-in interaction shortcut (Preferences → Interaction Shortcut) to toggle between interactive foreground (clickable map, links work) and background mode (click-through to desktop).
 
@@ -145,6 +147,10 @@ The widget picks the station from your home location using a built-in table of t
 
 Coverage is approximate — check the ABC's [frequency finder](https://reception.abc.net.au) for your exact address, and choose the station in ⚙️ settings if the automatic choice is wrong. The station table was last checked in October 2026.
 
+### CFA District Radio
+
+CFA incidents carry a 🎧 link to the [Broadcastify](https://www.broadcastify.com) feed of the CFA dispatch channel for the district the incident is in (CFA operational districts 2–27). The district is taken from the nearest of the towns listed on each district's Broadcastify feed page (checked October 2026). The link opens Broadcastify's own web player; playing the feed directly needs a Broadcastify premium account. Feeds are run by volunteers and may be offline at times.
+
 ### Earthquakes
 
 Earthquakes come from Geoscience Australia's [Earthquakes@GA](https://earthquakes.ga.gov.au) service (National Earthquake Alerts Centre), using its public 7-day GeoJSON feed:
@@ -180,6 +186,7 @@ The feed status dot in the banner indicates the active source: green for primary
 - [EMV Emergency Data & Licence Terms](https://www.emv.vic.gov.au/responsibilities/victorias-warning-system/emergency-data)
 - [VicEmergency Data Feed FAQ](https://support.emergency.vic.gov.au/hc/en-gb/articles/235717508-How-do-I-access-the-VicEmergency-data-feed)
 - [Earthquakes@GA — Geoscience Australia](https://earthquakes.ga.gov.au)
+- [Broadcastify — Victoria feeds](https://www.broadcastify.com/listen/stid/152)
 - [CFA RSS Feeds](https://www.cfa.vic.gov.au/rss-feeds)
 - [Bureau of Meteorology Fire Weather Services](http://www.bom.gov.au/weather-services/fire-weather-centre/index.shtml)
 
