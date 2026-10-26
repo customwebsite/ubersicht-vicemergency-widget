@@ -10,7 +10,7 @@
  *   3. Edit HOME_LAT / HOME_LON below to your location
  *   4. Optionally adjust RADIUS_KM and WIDGET_POSITION
  *
- * @version 1.3.0
+ * @version 1.4.0
  * @see https://github.com/customwebsite/vicemergency-ha
  */
 
@@ -30,6 +30,9 @@ const DEFAULTS = {
   MAP_ZOOM: 10,
   MAP_THEME: "light",
   HIDE_WHEN_CLEAR: false,
+  SHOW_EARTHQUAKES: true,
+  QUAKE_MIN_MAG: 2.0,
+  QUAKE_MAX_AGE_H: 72,
 };
 
 const CONFIG_PATH = "$HOME/.vicemergency-config.json";
@@ -66,6 +69,9 @@ export const command = `
       fi;
     fi;
   fi;
+  echo ',"quakes":';
+  QUAKES=$(curl -sf --compressed --max-time 10 "https://earthquakes.ga.gov.au/geoserver/earthquakes/wfs?service=WFS&request=getfeature&typeNames=earthquakes:earthquakes_seven_days&outputFormat=application/json" 2>/dev/null);
+  if [ -n "$QUAKES" ]; then echo "$QUAKES"; else echo 'null'; fi;
   echo '}'
 `;
 
@@ -336,6 +342,51 @@ function parseXMLFallback(data, cfg) {
   return incidents;
 }
 
+// Geoscience Australia earthquakes (earthquakes.ga.gov.au) — past 7 days, GeoJSON
+function parseQuakes(data, cfg) {
+  if (!cfg.SHOW_EARTHQUAKES || !data || !Array.isArray(data.features)) return [];
+  const now = Date.now();
+  const quakes = [];
+  for (const f of data.features) {
+    const p = f.properties || {};
+    const c = (f.geometry && f.geometry.coordinates) || [];
+    const lat = parseFloat(p.latitude != null ? p.latitude : c[1]);
+    const lon = parseFloat(p.longitude != null ? p.longitude : c[0]);
+    const mag = parseFloat(p.preferred_magnitude);
+    if (!lat || !lon || isNaN(mag)) continue;
+    if (mag < cfg.QUAKE_MIN_MAG) continue;
+
+    const t = Date.parse(p.origin_time || p.epicentral_time || "");
+    const ageH = isNaN(t) ? null : (now - t) / 3600000;
+    if (ageH !== null && ageH > cfg.QUAKE_MAX_AGE_H) continue;
+
+    const dist = haversine(cfg.HOME_LAT, cfg.HOME_LON, lat, lon);
+    if (dist > cfg.RADIUS_KM) continue;
+
+    const ago = ageH === null ? "" : ageH < 1 ? "<1 h ago" : ageH < 48 ? `${Math.round(ageH)} h ago` : `${Math.round(ageH / 24)} days ago`;
+    const felt = parseInt(p.felt_reports_count) || 0;
+    quakes.push({
+      id: `ga-${p.event_id || p.earthquake_id || f.id}`,
+      title: p.description || "",
+      category1: "Earthquake",
+      category2: "",
+      eventType: `M${mag.toFixed(1)} Earthquake`,
+      feedType: "incident",
+      status: [ago, felt > 0 ? `${felt} felt report${felt !== 1 ? "s" : ""}` : ""].filter(Boolean).join(" \u00b7 "),
+      location: p.description || "",
+      sourceOrg: "Geoscience Australia",
+      resources: 0,
+      group: getGroup("Earthquake", null),
+      warningLevel: null,
+      distance: Math.round(dist * 10) / 10,
+      bearing: compassBearing(cfg.HOME_LAT, cfg.HOME_LON, lat, lon),
+      lat,
+      lon,
+    });
+  }
+  return quakes;
+}
+
 // ─────────────────────────────────────────────────────────────
 // ▸ MAP — self-contained Leaflet in an iframe
 // ─────────────────────────────────────────────────────────────
@@ -440,7 +491,7 @@ function buildMapHtml(incidents, cfg) {
   });
 
   L.tileLayer('${tileUrl}', {
-    attribution: '\\u00a9 <a href="https://www.openstreetmap.org/copyright">OSM</a>, \\u00a9 <a href="https://carto.com/">CARTO</a>',
+    attribution: '\\u00a9 <a href="https://www.openstreetmap.org/copyright">OSM</a>, \\u00a9 <a href="https://carto.com/">CARTO</a>' + (${cfg.SHOW_EARTHQUAKES ? 'true' : 'false'} ? ', quakes \u00a9 Geoscience Australia' : ''),
     subdomains: 'abcd',
     maxZoom: 19
   }).addTo(map);
@@ -597,16 +648,22 @@ export const render = ({ output }) => {
   // Parse envelope: {"config": {...}, "feed": {...}}
   let feedData = output;
   let cfg = { ...DEFAULTS };
+  let quakeData = null;
   try {
     const envelope = JSON.parse(output);
     if (envelope.config) cfg = { ...DEFAULTS, ...envelope.config };
     feedData = envelope.feed || {};
+    quakeData = envelope.quakes || null;
   } catch (e) {
     // Fallback: treat entire output as feed (first run before config exists)
     try { feedData = JSON.parse(output); } catch (e2) { feedData = { error: true }; }
   }
 
   const { error, incidents, feedSource } = parseFeed(feedData, cfg);
+  if (!error) {
+    incidents.push(...parseQuakes(quakeData, cfg));
+    incidents.sort((a, b) => a.distance - b.distance);
+  }
   const now = new Date();
   const updated = now.toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" });
 
@@ -770,6 +827,9 @@ export const render = ({ output }) => {
       SHOW_MAP: val('showmap') === "auto" ? "auto" : val('showmap') === "true",
       EXCLUDE_BURN_AREA: chk('burn'),
       HIDE_WHEN_CLEAR: chk('hide'),
+      SHOW_EARTHQUAKES: chk('quakes'),
+      QUAKE_MIN_MAG: isNaN(parseFloat(val('quakemag'))) ? DEFAULTS.QUAKE_MIN_MAG : parseFloat(val('quakemag')),
+      QUAKE_MAX_AGE_H: cfg.QUAKE_MAX_AGE_H,
     };
 
     const json = JSON.stringify(newCfg, null, 2);
@@ -978,6 +1038,12 @@ export const render = ({ output }) => {
 
           <label>Hide when clear</label>
           <input id="ve-cfg-hide" type="checkbox" defaultChecked={cfg.HIDE_WHEN_CLEAR} />
+
+          <label>Show earthquakes</label>
+          <input id="ve-cfg-quakes" type="checkbox" defaultChecked={cfg.SHOW_EARTHQUAKES} />
+
+          <label>Min quake magnitude</label>
+          <input id="ve-cfg-quakemag" type="number" step="0.1" min="0" max="9" defaultValue={cfg.QUAKE_MIN_MAG} />
         </div>
         </div>
       </div>

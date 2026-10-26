@@ -2,7 +2,7 @@
 
 Victorian emergency incidents on your macOS desktop with live map, warning levels, and category breakdown.
 
-Fetches directly from the official [VicEmergency](https://emergency.vic.gov.au) GeoJSON feed — no Home Assistant or other server required.
+Fetches directly from the official [VicEmergency](https://emergency.vic.gov.au) GeoJSON feed, plus recent earthquakes from [Geoscience Australia](https://earthquakes.ga.gov.au) — no Home Assistant or other server required.
 
 ![screenshot](screenshot.png)
 
@@ -12,6 +12,7 @@ Fetches directly from the official [VicEmergency](https://emergency.vic.gov.au) 
 
 - **Live incident tracking** — fires, floods, storms, transport, hazmat, outages within a configurable radius
 - **Interactive Leaflet map** — dark or daylight CARTO tiles, clickable incident markers with popups, dashed watch zone ring
+- **Earthquakes** — recent quakes from Geoscience Australia within your radius, with magnitude, time since the quake and number of "felt" reports
 - **Australian Warning System** — tracks Advice, Watch & Act, and Emergency Warning levels with colour-coded badges
 - **6 category groups** — Fire, Flood, Storm, Transport, Hazmat, Outages with emoji chips and counts
 - **Nearest incident** — distance and compass bearing updated every 2 minutes
@@ -72,6 +73,9 @@ All settings are accessible via the ⚙️ gear icon or the config file at `~/.v
 | `MAP_ZOOM` | `10` | Default zoom level |
 | `MAP_THEME` | `"light"` | `"light"` (CARTO Voyager) or `"dark"` (CARTO Dark Matter) |
 | `HIDE_WHEN_CLEAR` | `false` | `true` hides the widget entirely when no incidents |
+| `SHOW_EARTHQUAKES` | `true` | Include recent earthquakes from Geoscience Australia |
+| `QUAKE_MIN_MAG` | `2.0` | Smallest earthquake magnitude to show |
+| `QUAKE_MAX_AGE_H` | `72` | Show earthquakes from the last this-many hours (feed covers 7 days; config file only) |
 
 Widget position is set in the `.jsx` file:
 
@@ -114,6 +118,14 @@ Data feeds may be delayed, incomplete, or unavailable during major events. Alway
 
 Fetches from `emergency.vic.gov.au/public/osom-geojson.json`, published by Emergency Management Victoria. The feed aggregates incidents from CFA, VICSES, BOM, Parks Victoria, VicRoads, ESTA, Melbourne Water, DEECA (formerly DELWP), FRV, and Ambulance Victoria.
 
+### Earthquakes
+
+Earthquakes come from Geoscience Australia's [Earthquakes@GA](https://earthquakes.ga.gov.au) service (National Earthquake Alerts Centre), using its public 7-day GeoJSON feed:
+
+`earthquakes.ga.gov.au/geoserver/earthquakes/wfs?service=WFS&request=getfeature&typeNames=earthquakes:earthquakes_seven_days&outputFormat=application/json`
+
+Quakes within `RADIUS_KM`, at or above `QUAKE_MIN_MAG` and newer than `QUAKE_MAX_AGE_H` are listed alongside other incidents and counted in the ⛈️ Storm & Weather group. If this feed is unavailable the widget carries on with VicEmergency data only.
+
 ### Fallback Chain
 
 If the primary GeoJSON endpoint fails:
@@ -139,6 +151,7 @@ The feed status dot in the banner indicates the active source: green for primary
 
 - [EMV Emergency Data & Licence Terms](https://www.emv.vic.gov.au/responsibilities/victorias-warning-system/emergency-data)
 - [VicEmergency Data Feed FAQ](https://support.emergency.vic.gov.au/hc/en-gb/articles/235717508-How-do-I-access-the-VicEmergency-data-feed)
+- [Earthquakes@GA — Geoscience Australia](https://earthquakes.ga.gov.au)
 - [CFA RSS Feeds](https://www.cfa.vic.gov.au/rss-feeds)
 - [Bureau of Meteorology Fire Weather Services](http://www.bom.gov.au/weather-services/fire-weather-centre/index.shtml)
 
@@ -163,4 +176,4 @@ For Windows users, similar functionality could be achieved by packaging this wid
 
 MIT License — see [LICENSE](LICENSE) for details.
 
-Data sourced from the State of Victoria under [Creative Commons Attribution 3.0 Australia](https://creativecommons.org/licenses/by/3.0/au/).
+Data sourced from the State of Victoria under [Creative Commons Attribution 3.0 Australia](https://creativecommons.org/licenses/by/3.0/au/). Earthquake data © Commonwealth of Australia (Geoscience Australia), [Creative Commons Attribution 4.0](https://creativecommons.org/licenses/by/4.0/).
