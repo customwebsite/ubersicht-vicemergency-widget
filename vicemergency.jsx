@@ -10,7 +10,7 @@
  *   3. Edit HOME_LAT / HOME_LON below to your location
  *   4. Optionally adjust RADIUS_KM and WIDGET_POSITION
  *
- * @version 1.4.0
+ * @version 1.5.0
  * @see https://github.com/customwebsite/vicemergency-ha
  */
 
@@ -33,6 +33,7 @@ const DEFAULTS = {
   SHOW_EARTHQUAKES: true,
   QUAKE_MIN_MAG: 2.0,
   QUAKE_MAX_AGE_H: 72,
+  ABC_STATION: "auto",   // "auto" = nearest by home location, or an ABC listen slug e.g. "shepparton"
 };
 
 const CONFIG_PATH = "$HOME/.vicemergency-config.json";
@@ -388,6 +389,171 @@ function parseQuakes(data, cfg) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// ▸ EMERGENCY RADIO — official emergency broadcaster for the home location
+// Source: Emergency Management Victoria, "Emergency radio broadcasters (Regional)";
+// ABC transmitters per station. Streams: abc.net.au/listen/live/<slug>.
+// ─────────────────────────────────────────────────────────────
+
+const ABC_STATIONS = {
+  melbourne:       "ABC Melbourne",
+  ballarat:        "ABC Ballarat",
+  centralvic:      "ABC Central Victoria",
+  gippsland:       "ABC Gippsland",
+  goulburnmurray:  "ABC Goulburn Murray",
+  milduraswanhill: "ABC Mildura-Swan Hill",
+  shepparton:      "ABC Shepparton",
+  southwestvic:    "ABC South West Victoria",
+  wimmera:         "ABC Wimmera",
+};
+
+// [lat, lon, station slug, frequency, town] — nearest town decides the station
+const ABC_POINTS = [
+  [-37.81, 144.96, "melbourne", "774 AM", "Melbourne"],
+  [-38.15, 144.36, "melbourne", "774 AM", "Geelong"],
+  [-38.33, 144.33, "melbourne", "774 AM", "Torquay"],
+  [-38.54, 143.98, "melbourne", "774 AM", "Lorne"],
+  [-38.76, 143.67, "melbourne", "89.5 FM", "Apollo Bay"],
+  [-37.68, 144.44, "melbourne", "774 AM", "Bacchus Marsh"],
+  [-37.68, 144.58, "melbourne", "774 AM", "Melton"],
+  [-37.58, 144.73, "melbourne", "774 AM", "Sunbury"],
+  [-37.49, 144.59, "melbourne", "774 AM", "Gisborne"],
+  [-37.36, 144.53, "melbourne", "774 AM", "Woodend"],
+  [-37.30, 144.95, "melbourne", "774 AM", "Kilmore"],
+  [-37.21, 145.43, "melbourne", "774 AM", "Yea"],
+  [-37.65, 145.52, "melbourne", "774 AM", "Healesville"],
+  [-37.75, 145.69, "melbourne", "96.1 FM", "Warburton"],
+  [-38.36, 144.91, "melbourne", "774 AM", "Rosebud"],
+  [-38.20, 145.49, "melbourne", "774 AM", "Koo Wee Rup"],
+  [-38.48, 145.23, "melbourne", "774 AM", "Phillip Island"],
+  [-38.61, 145.59, "melbourne", "774 AM", "Wonthaggi"],
+  [-38.16, 145.93, "melbourne", "774 AM", "Warragul"],
+  [-37.56, 143.85, "ballarat", "107.9 FM", "Ballarat"],
+  [-37.28, 142.93, "ballarat", "107.9 FM", "Ararat"],
+  [-37.09, 143.47, "ballarat", "107.9 FM", "Avoca"],
+  [-37.43, 143.38, "ballarat", "107.9 FM", "Beaufort"],
+  [-37.35, 144.14, "ballarat", "107.9 FM", "Daylesford"],
+  [-38.34, 143.58, "ballarat", "107.9 FM", "Colac"],
+  [-38.23, 143.15, "ballarat", "107.9 FM", "Camperdown"],
+  [-36.76, 144.28, "centralvic", "91.1 FM", "Bendigo"],
+  [-37.06, 144.22, "centralvic", "91.1 FM", "Castlemaine"],
+  [-37.25, 144.45, "centralvic", "91.1 FM", "Kyneton"],
+  [-37.05, 143.74, "centralvic", "91.1 FM", "Maryborough"],
+  [-36.92, 144.71, "centralvic", "91.1 FM", "Heathcote"],
+  [-36.13, 144.75, "centralvic", "91.1 FM", "Echuca"],
+  [-36.62, 143.26, "centralvic", "91.1 FM", "St Arnaud"],
+  [-37.03, 145.14, "centralvic", "91.1 FM", "Seymour"],
+  [-36.38, 145.40, "shepparton", "97.7 FM", "Shepparton"],
+  [-36.31, 145.05, "shepparton", "97.7 FM", "Kyabram"],
+  [-36.59, 145.02, "shepparton", "97.7 FM", "Rushworth"],
+  [-36.79, 145.15, "shepparton", "97.7 FM", "Nagambie"],
+  [-36.75, 145.57, "shepparton", "97.7 FM", "Euroa"],
+  [-36.55, 145.98, "shepparton", "97.7 FM", "Benalla"],
+  [-35.92, 145.65, "shepparton", "97.7 FM", "Cobram"],
+  [-36.02, 146.00, "shepparton", "97.7 FM", "Yarrawonga"],
+  [-37.05, 146.08, "shepparton", "103.7 FM", "Mansfield"],
+  [-37.23, 145.91, "shepparton", "98.1 FM", "Eildon"],
+  [-37.19, 145.71, "shepparton", "102.9 FM", "Alexandra"],
+  [-36.12, 146.89, "goulburnmurray", "106.5 FM", "Wodonga"],
+  [-36.08, 146.92, "goulburnmurray", "106.5 FM", "Albury"],
+  [-36.36, 146.32, "goulburnmurray", "106.5 FM", "Wangaratta"],
+  [-36.36, 146.69, "goulburnmurray", "106.5 FM", "Beechworth"],
+  [-36.05, 146.46, "goulburnmurray", "106.5 FM", "Rutherglen"],
+  [-36.22, 147.18, "goulburnmurray", "106.5 FM", "Tallangatta"],
+  [-36.74, 147.17, "goulburnmurray", "106.5 FM", "Mount Beauty"],
+  [-36.56, 146.72, "goulburnmurray", "91.7 FM", "Myrtleford"],
+  [-36.73, 146.96, "goulburnmurray", "89.7 FM", "Bright"],
+  [-36.89, 147.06, "goulburnmurray", "98.7 FM", "Harrietville"],
+  [-36.20, 147.90, "goulburnmurray", "99.7 FM", "Corryong"],
+  [-38.11, 147.07, "gippsland", "828 AM", "Sale"],
+  [-37.97, 146.98, "gippsland", "828 AM", "Maffra"],
+  [-38.20, 146.54, "gippsland", "100.7 FM", "Traralgon"],
+  [-38.24, 146.40, "gippsland", "100.7 FM", "Morwell"],
+  [-38.18, 146.26, "gippsland", "100.7 FM", "Moe"],
+  [-38.48, 145.95, "gippsland", "828 AM", "Leongatha"],
+  [-38.65, 146.20, "gippsland", "100.7 FM", "Foster"],
+  [-38.56, 146.68, "gippsland", "828 AM", "Yarram"],
+  [-37.83, 147.61, "gippsland", "100.7 FM", "Bairnsdale"],
+  [-37.88, 147.99, "gippsland", "100.7 FM", "Lakes Entrance"],
+  [-37.10, 147.60, "gippsland", "720 AM", "Omeo"],
+  [-37.71, 148.46, "gippsland", "97.1 FM", "Orbost"],
+  [-37.57, 149.15, "gippsland", "106.1 FM", "Cann River"],
+  [-37.56, 149.75, "gippsland", "104.9 FM", "Mallacoota"],
+  [-34.19, 142.16, "milduraswanhill", "104.3 FM", "Mildura"],
+  [-34.58, 142.77, "milduraswanhill", "104.3 FM", "Robinvale"],
+  [-35.34, 143.55, "milduraswanhill", "102.1 FM", "Swan Hill"],
+  [-35.73, 143.92, "milduraswanhill", "102.1 FM", "Kerang"],
+  [-38.38, 142.48, "southwestvic", "1602 AM", "Warrnambool"],
+  [-38.38, 142.24, "southwestvic", "1602 AM", "Port Fairy"],
+  [-38.08, 142.80, "southwestvic", "1602 AM", "Mortlake"],
+  [-37.74, 142.02, "southwestvic", "94.1 FM", "Hamilton"],
+  [-37.59, 141.40, "southwestvic", "94.1 FM", "Casterton"],
+  [-37.60, 141.69, "southwestvic", "94.1 FM", "Coleraine"],
+  [-38.34, 141.60, "southwestvic", "96.9 FM", "Portland"],
+  [-38.13, 141.63, "southwestvic", "96.9 FM", "Heywood"],
+  [-36.71, 142.20, "wimmera", "594 AM", "Horsham"],
+  [-36.45, 142.03, "wimmera", "594 AM", "Dimboola"],
+  [-36.33, 141.65, "wimmera", "594 AM", "Nhill"],
+  [-36.25, 142.39, "wimmera", "594 AM", "Warracknabeal"],
+  [-37.04, 141.29, "wimmera", "594 AM", "Edenhope"],
+  [-37.06, 142.78, "wimmera", "594 AM", "Stawell"],
+  [-36.37, 142.98, "wimmera", "594 AM", "Donald"],
+  [-36.26, 143.35, "wimmera", "594 AM", "Charlton"],
+  [-35.73, 142.37, "wimmera", "594 AM", "Hopetoun"],
+  [-35.07, 142.32, "wimmera", "594 AM", "Ouyen"],
+];
+
+// Local community broadcasters named as official emergency broadcasters for these towns
+// (shown when home is within LOCAL_RADIO_KM of one of them)
+const LOCAL_RADIO_KM = 25;
+const LOCAL_BROADCASTERS = [
+  { name: "UGFM", url: "https://ugfm.org/", towns: [
+    [-37.19, 145.71, "106.9 FM"], [-37.23, 145.91, "106.9 FM"], [-37.05, 146.08, "106.9 FM"],
+    [-37.21, 145.43, "88.9 FM"], [-37.53, 145.33, "94.5 FM"], [-37.51, 145.75, "98.5 FM"],
+    [-37.34, 145.29, "98.9 FM"], [-37.23, 145.22, "98.9 FM"] ] },
+  { name: "Radio Mansfield", url: "https://radiomansfield.org.au/", towns: [
+    [-37.05, 146.08, "99.7 FM"], [-37.23, 145.91, "99.7 FM"] ] },
+  { name: "Alpine Radio", url: "https://www.alpinefm.org.au/", towns: [
+    [-36.73, 146.96, "92.9 FM"], [-36.89, 147.06, "92.9 FM"], [-36.74, 147.17, "96.5 FM"],
+    [-36.87, 147.28, "96.5 FM"], [-36.45, 147.00, "96.5 FM"] ] },
+  { name: "Radio KLFM", url: null, towns: [
+    [-36.76, 144.28, "96.5 FM"], [-36.92, 144.71, "96.5 FM"], [-37.06, 144.22, "96.5 FM"],
+    [-37.25, 144.45, "96.5 FM"], [-36.50, 144.61, "96.5 FM"], [-36.57, 143.87, "96.5 FM"],
+    [-36.36, 144.70, "96.5 FM"] ] },
+  { name: "Plenty Valley", url: "https://www.pvfm.org.au/", towns: [
+    [-37.71, 145.15, "88.6 FM"], [-37.65, 145.02, "88.6 FM"], [-37.70, 145.10, "88.6 FM"],
+    [-37.64, 145.19, "88.6 FM"], [-37.68, 145.02, "88.6 FM"], [-37.51, 145.12, "88.6 FM"] ] },
+  { name: "Radio Eastern", url: null, towns: [
+    [-37.80, 145.28, "98.1 FM"], [-37.76, 145.35, "98.1 FM"] ] },
+];
+
+function pickRadio(cfg) {
+  let best = null;
+  for (const [lat, lon, slug, freq, town] of ABC_POINTS) {
+    const d = haversine(cfg.HOME_LAT, cfg.HOME_LON, lat, lon);
+    if (!best || d < best.d) best = { d, slug, freq, town };
+  }
+  let slug = best && best.d <= 150 ? best.slug : "melbourne";
+  let freq = best && best.d <= 150 ? best.freq : "774 AM";
+  if (cfg.ABC_STATION && cfg.ABC_STATION !== "auto" && ABC_STATIONS[cfg.ABC_STATION]) {
+    slug = cfg.ABC_STATION;
+    const p = ABC_POINTS.find((x) => x[2] === slug);
+    freq = p ? p[3] : "";
+  }
+  const abc = { name: ABC_STATIONS[slug], freq, url: `https://www.abc.net.au/listen/live/${slug}` };
+
+  const local = [];
+  for (const b of LOCAL_BROADCASTERS) {
+    let near = null;
+    for (const [lat, lon, f] of b.towns) {
+      const d = haversine(cfg.HOME_LAT, cfg.HOME_LON, lat, lon);
+      if (d <= LOCAL_RADIO_KM && (!near || d < near.d)) near = { d, f };
+    }
+    if (near) local.push({ name: b.name, freq: near.f, url: b.url });
+  }
+  return { abc, local };
+}
+
+// ─────────────────────────────────────────────────────────────
 // ▸ MAP — self-contained Leaflet in an iframe
 // ─────────────────────────────────────────────────────────────
 
@@ -666,6 +832,7 @@ export const render = ({ output }) => {
   }
   const now = new Date();
   const updated = now.toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" });
+  const radio = pickRadio(cfg);
 
   // Compute group counts
   const groupCounts = {};
@@ -1054,9 +1221,17 @@ export const render = ({ output }) => {
           <span className="ve-footer-link" onClick={() => run("open 'https://emergency.vic.gov.au/respond/'")}>
             {"\uD83D\uDD17"} VicEmergency
           </span>
-          <span className="ve-footer-link" onClick={() => run("open 'https://www.abc.net.au/listen/live/melbourne'")}>
-            {"\uD83D\uDCFB"} ABC 774
+          <span className="ve-footer-link" title={`${radio.abc.name} ${radio.abc.freq} — official emergency broadcaster`}
+                onClick={() => run(`open '${radio.abc.url}'`)}>
+            {"\uD83D\uDCFB"} {radio.abc.name} {radio.abc.freq}
           </span>
+          {radio.local.map((r) => (
+            <span key={r.name} className={r.url ? "ve-footer-link" : "ve-footer-text"}
+                  title={`${r.name} ${r.freq} — local emergency broadcaster`}
+                  onClick={r.url ? () => run(`open '${r.url}'`) : undefined}>
+              {r.name} {r.freq}
+            </span>
+          ))}
         </div>
         <span className="ve-updated">Updated {updated}</span>
       </div>
@@ -1494,8 +1669,14 @@ export const className = `
 
   .ve-footer-links {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 12px;
+    gap: 4px 12px;
+  }
+
+  .ve-footer-text {
+    color: #8E8E93;
+    font-size: 11px;
   }
 
   .ve-footer-link {

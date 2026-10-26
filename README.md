@@ -19,7 +19,8 @@ Fetches directly from the official [VicEmergency](https://emergency.vic.gov.au) 
 - **Click-to-pan** — tap an incident row to zoom the map to it, tap again to zoom back out
 - **Auto-collapse** — compact banner when all clear, expands automatically when incidents appear
 - **In-widget settings** — gear icon opens a config panel; click the map to pick your home location
-- **Footer links** — VicEmergency website and ABC 774 radio open in your browser
+- **Local emergency radio** — the footer links to the official ABC emergency broadcaster for your home location (e.g. ABC Central Victoria 91.1 FM around Bendigo, ABC Gippsland 828 AM around Sale) with its frequency, plus any local community emergency broadcaster nearby (e.g. UGFM, Alpine Radio)
+- **Footer links** — VicEmergency website and your local emergency radio stream open in your browser
 - **Feed health indicator** — green dot in the banner confirms the feed is responding
 - **Three-tier feed fallback** — GeoJSON → JSON → XML with automatic recovery
 - **Persistent config** — settings saved to `~/.vicemergency-config.json`, survives widget reloads
@@ -75,6 +76,7 @@ All settings are accessible via the ⚙️ gear icon or the config file at `~/.v
 | `HIDE_WHEN_CLEAR` | `false` | `true` hides the widget entirely when no incidents |
 | `SHOW_EARTHQUAKES` | `true` | Include recent earthquakes from Geoscience Australia |
 | `QUAKE_MIN_MAG` | `2.0` | Smallest earthquake magnitude to show |
+| `ABC_STATION` | `"auto"` | ABC emergency radio station in the footer: `"auto"` picks it from your location, or set one of `melbourne`, `ballarat`, `centralvic`, `gippsland`, `goulburnmurray`, `milduraswanhill`, `shepparton`, `southwestvic`, `wimmera` (config file only) |
 | `QUAKE_MAX_AGE_H` | `72` | Show earthquakes from the last this-many hours (feed covers 7 days; config file only) |
 
 Widget position is set in the `.jsx` file:
@@ -104,7 +106,7 @@ const WIDGET_POSITION = { top: "20px", right: "20px" };
 During an emergency, always:
 
 - Visit **[emergency.vic.gov.au](https://emergency.vic.gov.au)** for official warnings and updates
-- Tune in to **ABC Melbourne 774 AM** for emergency broadcasts ([listen live](https://www.abc.net.au/listen/live/melbourne))
+- Tune in to your local **ABC Radio** station for emergency broadcasts — ABC Melbourne 774 AM in Melbourne ([listen live](https://www.abc.net.au/listen/live/melbourne)); the widget footer shows the station for your area
 - Call **000** for life-threatening emergencies
 - Call the **VicEmergency Hotline** on **1800 226 226**
 - Monitor the **VicEmergency app** on your mobile device
@@ -117,6 +119,14 @@ Data feeds may be delayed, incomplete, or unavailable during major events. Alway
 ## Data Source
 
 Fetches from `emergency.vic.gov.au/public/osom-geojson.json`, published by Emergency Management Victoria. The feed aggregates incidents from CFA, VICSES, BOM, Parks Victoria, VicRoads, ESTA, Melbourne Water, DEECA (formerly DELWP), FRV, and Ambulance Victoria.
+
+### Emergency Radio
+
+ABC Local Radio is Victoria's official emergency broadcaster, but the station depends on where you are — ABC Melbourne 774 AM covers Melbourne and its fringe, while regional areas are served by ABC Ballarat, Central Victoria, Gippsland, Goulburn Murray, Mildura-Swan Hill, Shepparton, South West Victoria or Wimmera.
+
+The widget picks the station from your home location using a built-in table of towns and frequencies taken from Emergency Management Victoria's [list of regional emergency broadcasters](https://author.emv.vic.gov.au/node/1078). The footer shows the station and frequency (for a battery radio) and opens its live stream at `abc.net.au/listen/live/<station>`. Within 25 km of a town that also has a community emergency broadcaster (UGFM, Radio Mansfield, Alpine Radio, Radio KLFM, Plenty Valley FM, Radio Eastern) that station is listed too.
+
+Coverage is approximate — check the ABC's [frequency finder](https://reception.abc.net.au) for your exact address, and set `ABC_STATION` in the config file if the automatic choice is wrong.
 
 ### Earthquakes
 
