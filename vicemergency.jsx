@@ -10,7 +10,7 @@
  *   3. Edit HOME_LAT / HOME_LON below to your location
  *   4. Optionally adjust RADIUS_KM and WIDGET_POSITION
  *
- * @version 1.5.0
+ * @version 1.5.1
  * @see https://github.com/customwebsite/vicemergency-ha
  */
 
