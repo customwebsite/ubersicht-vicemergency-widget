@@ -926,6 +926,24 @@ function cfaDistrictAt(lat, lon) {
   return best && best.d <= 60 ? best.district : null;
 }
 
+// Responsible agency, shown only on hover
+const AGENCIES = [
+  [/CFA/i, "CFA (Country Fire Authority)"],
+  [/DEECA|DELWP|FFMV/i, "Forest Fire Management Victoria (DEECA)"],
+  [/SES/i, "VICSES (State Emergency Service)"],
+  [/FRV|MFB/i, "FRV (Fire Rescue Victoria)"],
+  [/ESTA/i, "Triple Zero Victoria"],
+  [/EMV/i, "Emergency Management Victoria"],
+  [/BOM/i, "Bureau of Meteorology"],
+  [/EPA/i, "EPA Victoria"],
+  [/POL/i, "Victoria Police"],
+];
+function agencyName(org) {
+  if (!org) return "";
+  const hit = AGENCIES.find(([re]) => re.test(org));
+  return hit ? hit[1] : org.replace(/^[A-Z]+\//, "");
+}
+
 function cfaRadio(inc) {
   if (!/CFA/i.test(inc.sourceOrg || "")) return null;
   const district = cfaDistrictAt(inc.lat, inc.lon);
@@ -1021,6 +1039,7 @@ function buildMapHtml(incidents, cfg) {
              polygons: inc.polygons || [], action: inc.action || "", inside: !!inc.homeInside,
              level: inc.warningLevel || "", state: inc.warningLevel ? "" : statusClass(inc.status),
              when: inc.issued ? `${inc.warningLevel ? "Issued" : "Updated"} ${whenText(inc.issued)}` : "",
+             agency: agencyName(inc.sourceOrg),
              radio: inc.cfaRadio ? { label: `CFA District ${inc.cfaRadio.district} radio`, url: inc.cfaRadio.url } : null };
   });
 
@@ -1185,7 +1204,7 @@ function buildMapHtml(incidents, cfg) {
   // Incident markers — store references for panTo
   var markerRefs = [];
   d.markers.forEach(function(m, idx) {
-    var cm = L.marker([m.lat, m.lon], { icon: symbol(m), riseOnHover: true, zIndexOffset: m.level ? 1000 : 0 }).addTo(map).bindPopup(
+    var cm = L.marker([m.lat, m.lon], { icon: symbol(m), title: m.agency || "", riseOnHover: true, zIndexOffset: m.level ? 1000 : 0 }).addTo(map).bindPopup(
       '<div class="ve-popup">' +
         '<div class="ve-popup-title" style="color:' + m.colour + '">' + esc(m.label) + '</div>' +
         (m.detail ? '<div class="ve-popup-detail">' + esc(m.detail) + '</div>' : '') +
@@ -1781,7 +1800,7 @@ export const render = ({ output }) => {
           const openLink = (e) => { e.stopPropagation(); run(`open ${shq(inc.link)}`); };
 
           return (
-            <div key={inc.id} data-group={inc.group}
+            <div key={inc.id} data-group={inc.group} title={agencyName(inc.sourceOrg)}
                  className={`ve-incident ${inc.homeInside ? "ve-incident-inside" : ""} ${!inc.warningLevel && statusClass(inc.status) === "finished" ? "ve-incident-finished" : ""} ${_groupFilter && inc.group !== _groupFilter ? "ve-filtered-out" : ""}`}
                  onClick={() => panToIncident(inc.lat, inc.lon, idx)}>
               <div className="ve-dot" style={{ background: dot }} />

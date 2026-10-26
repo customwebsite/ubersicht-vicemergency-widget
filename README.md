@@ -28,6 +28,7 @@ Fetches directly from the official [VicEmergency](https://emergency.vic.gov.au) 
 - **7 category groups** — Fire, Flood, Storm, Transport, Hazmat, Outages, Quake with emoji chips and counts
 - **Nearest incident** — distance and compass bearing updated every 2 minutes
 - **Click-to-pan** — tap an incident row to zoom the map to it, tap again to zoom back out
+- **Responsible agency on hover** — hover over an incident (in the list or on the map) to see which agency is handling it, e.g. CFA, Forest Fire Management Victoria or VICSES. CFA radio links appear only on CFA incidents
 - **Auto-collapse** — compact banner when all clear, expands automatically when incidents appear
 - **In-widget settings** — gear icon opens a config panel; click the map to pick your home location
 - **Local emergency radio** — the footer links to the official ABC emergency broadcaster for your home location (e.g. ABC Central Victoria 91.1 FM around Bendigo, ABC Gippsland 828 AM around Sale) with its frequency, plus any local community emergency broadcaster nearby (e.g. UGFM, Alpine Radio)
