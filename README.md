@@ -15,7 +15,7 @@ Fetches directly from the official [VicEmergency](https://emergency.vic.gov.au) 
 - **Warning advice** — each warning shows its recommended action (e.g. Stay Informed, Leave Now), the start of the advice text and a link to the full warning on VicEmergency
 - **Fire danger rating & Total Fire Ban** — today's and tomorrow's rating for your fire weather district, in the official Australian Fire Danger Rating colours, with a Total Fire Ban flag. Shown even when all is clear
 - **Feed health** — the footer shows when VicEmergency last published its data; a ⚠️ appears if the data is stale, a backup feed is in use or the earthquake feed is down
-- **CFA district radio** — each CFA incident (in the list and in its map popup) links to the Broadcastify feed of the CFA dispatch channel for that incident's CFA district
+- **CFA district radio** — each CFA incident (in the list and in its map popup) links to the Broadcastify feed of the CFA dispatch channel for that incident's CFA district (listening requires a free Broadcastify account)
 - **Category filter** — click a category chip to show only those incidents in the list and on the map; click it again (or ✕ Show all, the zone name, or an empty part of the widget) to show everything
 - **Scrolling incident list** — the list scrolls on its own so the map always stays on screen
 - **Live incident tracking** — fires, floods, storms, transport, hazmat, outages within a configurable radius
@@ -149,7 +149,7 @@ Coverage is approximate — check the ABC's [frequency finder](https://reception
 
 ### CFA District Radio
 
-CFA incidents carry a 🎧 link to the [Broadcastify](https://www.broadcastify.com) feed of the CFA dispatch channel for the district the incident is in (CFA operational districts 2–27). The district is taken from the nearest of the towns listed on each district's Broadcastify feed page (checked October 2026). The link opens Broadcastify's own web player; playing the feed directly needs a Broadcastify premium account. Feeds are run by volunteers and may be offline at times.
+CFA incidents carry a 🎧 link to the [Broadcastify](https://www.broadcastify.com) feed of the CFA dispatch channel for the district the incident is in (CFA operational districts 2–27). The district is taken from the nearest of the towns listed on each district's Broadcastify feed page (checked October 2026). The link opens Broadcastify's own web player. **Listening requires a free Broadcastify account** — [create one](https://www.broadcastify.com) and sign in once in your browser; the browser then remembers you. Playing a feed directly in another player (such as QuickTime) needs a paid Broadcastify premium subscription. Feeds are run by volunteers and may be offline at times.
 
 ### Earthquakes
 
