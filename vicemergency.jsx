@@ -10,7 +10,7 @@
  *   3. Edit HOME_LAT / HOME_LON below to your location
  *   4. Optionally adjust RADIUS_KM and WIDGET_POSITION
  *
- * @version 1.5.1
+ * @version 1.6.0
  * @see https://github.com/customwebsite/vicemergency-ha
  */
 
@@ -34,7 +34,13 @@ const DEFAULTS = {
   QUAKE_MIN_MAG: 2.0,
   QUAKE_MAX_AGE_H: 72,
   ABC_STATION: "auto",   // "auto" = nearest by home location, or an ABC listen slug e.g. "shepparton"
+  FIRE_DISTRICT: "auto", // "auto" = from home location, or a district name e.g. "North East"
+  ALERTS: true,              // macOS notification for new/escalated warnings and fire bans
+  ALERT_LEVEL: "watch_and_act", // lowest warning level that alerts: "advice" | "watch_and_act" | "emergency_warning"
+  ALERT_SOUND: true,
 };
+
+const ALERT_STATE_PATH = "$HOME/.vicemergency-alerted.json";
 
 const CONFIG_PATH = "$HOME/.vicemergency-config.json";
 
@@ -73,6 +79,8 @@ export const command = `
   echo ',"quakes":';
   QUAKES=$(curl -sf --compressed --max-time 10 "https://earthquakes.ga.gov.au/geoserver/earthquakes/wfs?service=WFS&request=getfeature&typeNames=earthquakes:earthquakes_seven_days&outputFormat=application/json" 2>/dev/null);
   if [ -n "$QUAKES" ]; then echo "$QUAKES"; else echo 'null'; fi;
+  echo ',"alerted":';
+  cat ${ALERT_STATE_PATH} 2>/dev/null || echo 'null';
   echo '}'
 `;
 
@@ -85,6 +93,7 @@ let _collapsed = false;
 let _prevIncidentCount = undefined;
 let _lastClickedIdx = null;
 let _settingsOpen = false;
+let _alertedSession = {};   // alerts already sent this session (backs up the state file)
 
 // ─────────────────────────────────────────────────────────────
 // ▸ DATA LAYER — ported from vicemergency-ha parser
@@ -95,7 +104,7 @@ const CATEGORY_GROUPS = {
   "Flood":"flood","Flooding":"flood","Riverine Flood":"flood","Flash Flood":"flood","Coastal Flood":"flood","Dam Failure":"flood",
   "Storm":"storm_weather","Severe Storm":"storm_weather","Severe Weather":"storm_weather",
   "Severe Thunderstorm":"storm_weather","Damaging Winds":"storm_weather","Tornado/Cyclone":"storm_weather",
-  "Met":"storm_weather","Earthquake":"storm_weather","Tsunami":"storm_weather","Landslide":"storm_weather",
+  "Met":"storm_weather","Earthquake":"quake","Tsunami":"storm_weather","Landslide":"storm_weather",
   "Vehicle Accident":"transport","Aircraft Accident":"transport","Rail Accident":"transport",
   "Marine Accident":"transport","Rescue":"transport","Accident / Rescue":"transport",
   "Hazardous Material":"hazmat_health","Medical":"hazmat_health","Animal Health":"hazmat_health",
@@ -148,6 +157,52 @@ function extractCoords(geometry) {
   return null;
 }
 
+// All polygon outer rings in a geometry, as [[lon,lat], ...]
+function extractRings(geometry) {
+  if (!geometry) return [];
+  const t = geometry.type;
+  if (t === "GeometryCollection") return (geometry.geometries || []).flatMap(extractRings);
+  if (t === "Polygon") return geometry.coordinates && geometry.coordinates[0] ? [geometry.coordinates[0]] : [];
+  if (t === "MultiPolygon") return (geometry.coordinates || []).map((poly) => poly[0]).filter(Boolean);
+  return [];
+}
+
+// Ray-casting point-in-polygon; ring is [[lon,lat], ...]
+function pointInRing(lat, lon, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0], yi = ring[i][1], xj = ring[j][0], yj = ring[j][1];
+    if (((yi > lat) !== (yj > lat)) && (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi)) inside = !inside;
+  }
+  return inside;
+}
+
+// Thin a ring to at most maxPts points for drawing; returns [[lat,lon], ...]
+function thinRing(ring, maxPts) {
+  const step = Math.max(1, Math.ceil(ring.length / maxPts));
+  const out = [];
+  for (let i = 0; i < ring.length; i += step) out.push([ring[i][1], ring[i][0]]);
+  return out;
+}
+
+function htmlToText(html) {
+  return String(html || "")
+    .replace(/<\/(p|div|li|br)>|<br\s*\/?>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&#39;|&rsquo;|&lsquo;/g, "'").replace(/&quot;|&rdquo;|&ldquo;/g, '"')
+    .replace(/\s+/g, " ").trim();
+}
+
+// Link to the full warning on VicEmergency
+function warningLink(p) {
+  const m = /More details at (https?:\/\/\S+)/.exec(p.text || "");
+  if (m) return m[1].replace(/^http:/, "https:");
+  if (p.sourceFeed === "cop-cap" && p.sourceId) return `https://emergency.vic.gov.au/respond/#!/warning/${p.sourceId}/moreinfo`;
+  if (p.url && /^https?:/.test(p.url)) return p.url;
+  return null;
+}
+
 function centroid(ring) {
   const n = ring.length;
   let sLat = 0, sLon = 0;
@@ -177,7 +232,7 @@ function compassBearing(lat1, lon1, lat2, lon2) {
 function parseFeed(raw, cfg) {
   try {
     const data = typeof raw === "string" ? JSON.parse(raw) : raw;
-    if (data.error) return { error: "Feed unavailable", incidents: [], feedSource: "none" };
+    if (data.error) return { error: "Feed unavailable", incidents: [], feedSource: "none", feedUpdated: null, conditions: null };
 
     const format = data._format || "geojson";
     const feedData = data.data || data;
@@ -195,10 +250,17 @@ function parseFeed(raw, cfg) {
     }
 
     rawIncidents.sort((a, b) => a.distance - b.distance);
-    return { error: null, incidents: rawIncidents, feedSource: format };
+    const props = (format === "geojson" && feedData.properties) || {};
+    return {
+      error: null,
+      incidents: rawIncidents,
+      feedSource: format,
+      feedUpdated: props.lastUpdated || null,
+      conditions: props.conditions || null,
+    };
 
   } catch (e) {
-    return { error: `Parse error: ${e.message}`, incidents: [], feedSource: "none" };
+    return { error: `Parse error: ${e.message}`, incidents: [], feedSource: "none", feedUpdated: null, conditions: null };
   }
 }
 
@@ -218,8 +280,24 @@ function parseGeoJSON(data, cfg) {
 
     const cap = typeof p.cap === "object" ? p.cap : {};
     const eventType = cap.event || null;
+    const isWarning = p.feedType && p.feedType !== "incident" && p.feedType !== "burn-area";
 
-    const dist = haversine(cfg.HOME_LAT, cfg.HOME_LON, coords.lat, coords.lon);
+    // Warning areas: keep the outline, check whether home is inside, measure to the nearest edge
+    let dist = haversine(cfg.HOME_LAT, cfg.HOME_LON, coords.lat, coords.lon);
+    let homeInside = false;
+    let polygons = [];
+    if (isWarning) {
+      const rings = extractRings(f.geometry);
+      homeInside = rings.some((r) => pointInRing(cfg.HOME_LAT, cfg.HOME_LON, r));
+      for (const r of rings) {
+        const step = Math.max(1, Math.ceil(r.length / 400));
+        for (let i = 0; i < r.length; i += step) {
+          dist = Math.min(dist, haversine(cfg.HOME_LAT, cfg.HOME_LON, r[i][1], r[i][0]));
+        }
+      }
+      if (homeInside) dist = 0;
+      polygons = rings.map((r) => thinRing(r, 150));
+    }
     if (dist > cfg.RADIUS_KM) continue;
 
     const bearing = compassBearing(cfg.HOME_LAT, cfg.HOME_LON, coords.lat, coords.lon);
@@ -243,6 +321,11 @@ function parseGeoJSON(data, cfg) {
       bearing,
       lat: coords.lat,
       lon: coords.lon,
+      homeInside,
+      polygons,
+      action: isWarning ? (p.action || "") : "",
+      advice: isWarning ? htmlToText(p.webBody || p.text).slice(0, 300) : "",
+      link: isWarning ? warningLink(p) : (p.url && /^https?:/.test(p.url) ? p.url : null),
     });
   }
   return incidents;
@@ -390,7 +473,7 @@ function parseQuakes(data, cfg) {
 
 // ─────────────────────────────────────────────────────────────
 // ▸ EMERGENCY RADIO — official emergency broadcaster for the home location
-// Source: Emergency Management Victoria, "Emergency radio broadcasters (Regional)";
+// Source: Emergency Management Victoria, "Emergency radio broadcasters (Regional)" (checked October 2026);
 // ABC transmitters per station. Live audio: streaming.abc-cdn.net.au/audio/hls/local<slug>.m3u8
 // (played in QuickTime Player; falls back to the abc.net.au/listen/live/<slug> page).
 // ─────────────────────────────────────────────────────────────
@@ -561,13 +644,177 @@ function pickRadio(cfg) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// ▸ FIRE DANGER — rating and Total Fire Ban for the home fire weather district
+// Ratings come with the VicEmergency feed (properties.conditions). District is
+// picked from the nearest town; towns follow CFA's council-to-district list
+// ("Find your fire weather district"). Override with FIRE_DISTRICT.
+// ─────────────────────────────────────────────────────────────
+
+const FIRE_DISTRICTS = ["Mallee", "Wimmera", "South West", "Northern Country", "North Central",
+  "Central", "North East", "East Gippsland", "West and South Gippsland"];
+
+// [lat, lon, district] — main towns of each council
+const FIRE_DISTRICT_POINTS = [
+  [-34.19, 142.16, "Mallee"], [-35.07, 142.32, "Mallee"], [-34.58, 142.77, "Mallee"], [-35.34, 143.55, "Mallee"],
+  [-35.73, 143.92, "Mallee"], [-35.81, 144.22, "Mallee"], [-36.26, 143.35, "Mallee"], [-36.37, 142.98, "Mallee"],
+  [-36.08, 143.23, "Mallee"], [-35.50, 142.85, "Mallee"], [-35.73, 142.37, "Mallee"], [-35.98, 142.92, "Mallee"],
+  [-36.71, 142.20, "Wimmera"], [-36.33, 141.65, "Wimmera"], [-36.45, 142.03, "Wimmera"], [-36.25, 142.39, "Wimmera"],
+  [-37.04, 141.29, "Wimmera"], [-36.38, 141.24, "Wimmera"], [-37.06, 142.78, "Wimmera"], [-36.62, 143.26, "Wimmera"],
+  [-37.14, 142.52, "Wimmera"],
+  [-37.28, 142.93, "South West"], [-37.43, 143.38, "South West"], [-37.09, 143.47, "South West"], [-38.34, 143.58, "South West"],
+  [-38.76, 143.67, "South West"], [-38.23, 143.15, "South West"], [-38.33, 143.07, "South West"], [-38.34, 141.60, "South West"],
+  [-37.59, 141.40, "South West"], [-38.13, 141.63, "South West"], [-38.38, 142.24, "South West"], [-38.08, 142.80, "South West"],
+  [-37.74, 142.02, "South West"], [-37.60, 141.69, "South West"], [-38.38, 142.48, "South West"],
+  [-36.13, 144.75, "Northern Country"], [-36.36, 144.70, "Northern Country"], [-36.31, 145.05, "Northern Country"],
+  [-36.76, 144.28, "Northern Country"], [-36.92, 144.71, "Northern Country"], [-36.38, 145.40, "Northern Country"],
+  [-36.42, 143.61, "Northern Country"], [-36.57, 143.87, "Northern Country"], [-36.12, 143.72, "Northern Country"],
+  [-35.92, 145.65, "Northern Country"], [-36.02, 146.00, "Northern Country"], [-36.09, 145.44, "Northern Country"],
+  [-36.75, 145.57, "Northern Country"], [-36.79, 145.15, "Northern Country"],
+  [-36.05, 144.11, "Northern Country"], [-36.21, 144.23, "Northern Country"], [-36.41, 143.97, "Northern Country"],
+  [-37.05, 143.74, "North Central"], [-36.86, 143.73, "North Central"], [-37.03, 145.14, "North Central"],
+  [-37.30, 144.95, "North Central"], [-37.42, 144.98, "North Central"], [-37.20, 145.05, "North Central"],
+  [-37.06, 144.22, "North Central"], [-36.99, 144.26, "North Central"], [-37.19, 145.71, "North Central"],
+  [-37.21, 145.43, "North Central"], [-37.53, 145.33, "North Central"], [-37.51, 145.75, "North Central"],
+  [-37.23, 145.91, "North Central"], [-37.49, 145.88, "North Central"],
+  [-37.81, 144.96, "Central"], [-38.15, 144.36, "Central"], [-37.56, 143.85, "Central"], [-37.35, 144.14, "Central"],
+  [-37.42, 143.89, "Central"], [-37.25, 144.45, "Central"], [-37.49, 144.59, "Central"], [-37.36, 144.53, "Central"],
+  [-37.68, 144.44, "Central"], [-37.60, 144.23, "Central"], [-38.33, 144.33, "Central"], [-38.54, 143.98, "Central"],
+  [-37.97, 144.17, "Central"], [-37.64, 143.68, "Central"], [-37.68, 144.58, "Central"], [-37.58, 144.73, "Central"],
+  [-37.60, 144.94, "Central"], [-37.51, 145.12, "Central"], [-37.71, 145.15, "Central"], [-37.64, 145.19, "Central"],
+  [-37.65, 145.52, "Central"], [-37.75, 145.69, "Central"], [-37.76, 145.35, "Central"], [-38.07, 145.49, "Central"],
+  [-38.20, 145.49, "Central"], [-38.10, 145.28, "Central"], [-38.14, 145.12, "Central"], [-38.36, 144.91, "Central"],
+  [-38.61, 145.59, "Central"], [-38.48, 145.23, "Central"], [-37.90, 144.66, "Central"], [-37.99, 145.21, "Central"],
+  [-38.27, 144.66, "Central"],
+  [-36.12, 146.89, "North East"], [-36.36, 146.32, "North East"], [-36.36, 146.69, "North East"], [-36.05, 146.46, "North East"],
+  [-36.15, 146.61, "North East"], [-36.73, 146.96, "North East"], [-36.56, 146.72, "North East"], [-36.74, 147.17, "North East"],
+  [-36.87, 147.28, "North East"], [-36.98, 147.13, "North East"], [-36.55, 145.98, "North East"], [-37.05, 146.08, "North East"],
+  [-37.15, 146.44, "North East"], [-37.03, 145.86, "North East"], [-36.20, 147.90, "North East"], [-36.22, 147.18, "North East"],
+  [-36.89, 147.06, "North East"],
+  [-37.83, 147.61, "East Gippsland"], [-37.88, 147.99, "East Gippsland"], [-37.71, 148.46, "East Gippsland"],
+  [-37.10, 147.60, "East Gippsland"], [-37.56, 149.75, "East Gippsland"], [-37.57, 149.15, "East Gippsland"],
+  [-37.92, 147.72, "East Gippsland"], [-37.26, 147.72, "East Gippsland"],
+  [-38.16, 145.93, "West and South Gippsland"], [-38.14, 145.86, "West and South Gippsland"], [-37.89, 146.00, "West and South Gippsland"],
+  [-37.84, 146.27, "West and South Gippsland"], [-38.20, 146.54, "West and South Gippsland"], [-38.24, 146.40, "West and South Gippsland"],
+  [-38.18, 146.26, "West and South Gippsland"], [-38.31, 146.42, "West and South Gippsland"], [-38.48, 145.95, "West and South Gippsland"],
+  [-38.43, 145.82, "West and South Gippsland"], [-38.65, 146.20, "West and South Gippsland"], [-38.40, 146.16, "West and South Gippsland"],
+  [-38.11, 147.07, "West and South Gippsland"], [-37.97, 146.98, "West and South Gippsland"], [-38.56, 146.68, "West and South Gippsland"],
+  [-37.98, 146.79, "West and South Gippsland"], [-38.15, 146.79, "West and South Gippsland"],
+];
+
+// Australian Fire Danger Rating System colours
+const FDR_STYLE = {
+  "MODERATE":     { label: "Moderate",     colour: "#64BF30", text: "#FFFFFF" },
+  "HIGH":         { label: "High",         colour: "#FFE000", text: "#1E1E20" },
+  "EXTREME":      { label: "Extreme",      colour: "#F78100", text: "#FFFFFF" },
+  "CATASTROPHIC": { label: "Catastrophic", colour: "#AD0909", text: "#FFFFFF" },
+};
+
+function pickFireDistrict(cfg) {
+  if (cfg.FIRE_DISTRICT && cfg.FIRE_DISTRICT !== "auto" && FIRE_DISTRICTS.includes(cfg.FIRE_DISTRICT)) return cfg.FIRE_DISTRICT;
+  let best = null;
+  for (const [lat, lon, district] of FIRE_DISTRICT_POINTS) {
+    const d = haversine(cfg.HOME_LAT, cfg.HOME_LON, lat, lon);
+    if (!best || d < best.d) best = { d, district };
+  }
+  return best && best.d <= 150 ? best.district : null;
+}
+
+function melbDate(d) {
+  return d.toLocaleDateString("en-CA", { timeZone: "Australia/Melbourne" }); // YYYY-MM-DD
+}
+
+// { district, today: {rating, tfb, date}, tomorrow: {...} } or null when unavailable
+function fireInfo(conditions, cfg) {
+  const district = pickFireDistrict(cfg);
+  if (!conditions || !district) return district ? { district, unavailable: true } : null;
+  const today = melbDate(new Date());
+  const tomorrow = melbDate(new Date(Date.now() + 86400000));
+  const day = (src, date) => src && src.fdr ? {
+    date,
+    rating: String((src.fdr || {})[district] || "").toUpperCase(),
+    tfb: /^YES/i.test(String((src.tfb || {})[district] || "")),
+  } : null;
+  const forecasts = Array.isArray(conditions.forecasts) ? conditions.forecasts : [];
+  const byDate = (date) => forecasts.find((f) => f.date && melbDate(new Date(f.date)) === date);
+  return {
+    district,
+    today: day(byDate(today) || conditions, today),
+    tomorrow: day(byDate(tomorrow), tomorrow),
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
+// ▸ ALERTS — macOS notification for new or escalated warnings near home,
+// warnings covering home, Total Fire Bans and Extreme/Catastrophic ratings.
+// What has been alerted is kept in ~/.vicemergency-alerted.json.
+// ─────────────────────────────────────────────────────────────
+
+const LEVEL_LABEL = { advice: "Advice", watch_and_act: "Watch and Act", emergency_warning: "Emergency Warning" };
+
+function shq(str) { return "'" + String(str).replace(/'/g, "'\\''") + "'"; }
+
+function collectAlerts(incidents, fire, cfg, previous) {
+  const state = {};
+  const alerts = [];
+  const minPriority = WARNING_PRIORITY[cfg.ALERT_LEVEL] || WARNING_PRIORITY.watch_and_act;
+  const seen = (key, value) => {
+    const before = (previous && previous[key]) || _alertedSession[key] || 0;
+    state[key] = Math.max(value, before);
+    return value > before;
+  };
+
+  for (const inc of incidents) {
+    if (!inc.warningLevel) continue;
+    const pr = WARNING_PRIORITY[inc.warningLevel] || 0;
+    if (!inc.homeInside && pr < minPriority) continue;
+    const key = `w:${inc.id}`;
+    const value = pr + (inc.homeInside ? 10 : 0);
+    if (seen(key, value)) {
+      const where = inc.location || inc.title || "";
+      alerts.push({
+        title: `VicEmergency \u2014 ${LEVEL_LABEL[inc.warningLevel] || "Warning"}`,
+        message: inc.homeInside
+          ? `Your location is inside this warning area: ${inc.eventType || inc.category2 || inc.category1} \u2014 ${where}. ${inc.action || ""}`
+          : `${inc.eventType || inc.category2 || inc.category1} \u2014 ${where}, ${inc.distance} km ${inc.bearing}. ${inc.action || ""}`,
+      });
+    }
+  }
+
+  if (fire && !fire.unavailable) {
+    for (const [when, day] of [["today", fire.today], ["tomorrow", fire.tomorrow]]) {
+      if (!day) continue;
+      if (day.tfb && seen(`tfb:${day.date}`, 1)) {
+        alerts.push({ title: "VicEmergency \u2014 Total Fire Ban", message: `Total Fire Ban ${when} in the ${fire.district} district.` });
+      }
+      const rank = { EXTREME: 1, CATASTROPHIC: 2 }[day.rating] || 0;
+      if (rank && seen(`fdr:${day.date}`, rank)) {
+        alerts.push({ title: `VicEmergency \u2014 ${FDR_STYLE[day.rating].label} fire danger`,
+          message: `Fire danger is ${FDR_STYLE[day.rating].label.toUpperCase()} ${when} in the ${fire.district} district.` });
+      }
+    }
+  }
+  return { alerts, state };
+}
+
+function sendAlerts(alerts, state, cfg) {
+  Object.assign(_alertedSession, state);
+  const cmds = alerts.slice(0, 4).map((a) =>
+    `osascript -e 'on run argv' -e 'display notification (item 2 of argv) with title (item 1 of argv)${cfg.ALERT_SOUND ? ' sound name "Sosumi"' : ""}' -e 'end run' ${shq(a.title)} ${shq(a.message)}`);
+  if (alerts.length > 4) {
+    cmds.push(`osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title "VicEmergency"' -e 'end run' ${shq(`${alerts.length - 4} more warnings \u2014 see the widget`)}`);
+  }
+  cmds.push(`printf '%s' ${shq(JSON.stringify(state))} > ${ALERT_STATE_PATH}`);
+  run(cmds.join("; "));
+}
+
+// ─────────────────────────────────────────────────────────────
 // ▸ MAP — self-contained Leaflet in an iframe
 // ─────────────────────────────────────────────────────────────
 
 const GROUP_COLOURS = {
   fire: "#E53935", flood: "#42A5F5", storm_weather: "#AB47BC",
   transport: "#FB8C00", hazmat_health: "#66BB6A", outages_closures: "#78909C",
-  other: "#BDBDBD",
+  quake: "#A1887F", other: "#BDBDBD",
 };
 
 const FEEDTYPE_COLOURS = {
@@ -577,10 +824,11 @@ const FEEDTYPE_COLOURS = {
 function buildMapHtml(incidents, cfg) {
   const markers = incidents.map((inc) => {
     const colour = FEEDTYPE_COLOURS[inc.feedType] || GROUP_COLOURS[inc.group] || GROUP_COLOURS.other;
-    const label = (inc.eventType || inc.category1 || inc.title || "Incident").replace(/'/g, "\\'");
-    const detail = (inc.location || "").replace(/'/g, "\\'");
+    const label = inc.eventType || inc.category1 || inc.title || "Incident";
+    const detail = inc.location || "";
     const dist = inc.distance;
-    return { lat: inc.lat, lon: inc.lon, colour, label, detail, dist, feedType: inc.feedType, resources: inc.resources };
+    return { lat: inc.lat, lon: inc.lon, colour, label, detail, dist, feedType: inc.feedType, resources: inc.resources,
+             polygons: inc.polygons || [], action: inc.action || "", inside: !!inc.homeInside };
   });
 
   const dataJson = JSON.stringify({ home: { lat: cfg.HOME_LAT, lon: cfg.HOME_LON }, markers, zoom: cfg.MAP_ZOOM })
@@ -698,6 +946,16 @@ function buildMapHtml(incidents, cfg) {
     dashArray: '6 4',
   }).addTo(map);
 
+  function esc(t) { return String(t == null ? '' : t).replace(/[&<>"']/g, function(c) { return '&#' + c.charCodeAt(0) + ';'; }); }
+
+  // Warning areas — outlines under the markers
+  d.markers.forEach(function(m) {
+    (m.polygons || []).forEach(function(ring) {
+      if (ring.length < 3) return;
+      L.polygon(ring, { color: m.colour, weight: 1.5, fillColor: m.colour, fillOpacity: m.inside ? 0.22 : 0.12, interactive: false }).addTo(map);
+    });
+  });
+
   // Incident markers — store references for panTo
   var markerRefs = [];
   d.markers.forEach(function(m, idx) {
@@ -713,8 +971,10 @@ function buildMapHtml(incidents, cfg) {
       weight: weight,
     }).addTo(map).bindPopup(
       '<div class="ve-popup">' +
-        '<div class="ve-popup-title" style="color:' + m.colour + '">' + m.label + '</div>' +
-        (m.detail ? '<div class="ve-popup-detail">' + m.detail + '</div>' : '') +
+        '<div class="ve-popup-title" style="color:' + m.colour + '">' + esc(m.label) + '</div>' +
+        (m.detail ? '<div class="ve-popup-detail">' + esc(m.detail) + '</div>' : '') +
+        (m.action ? '<div class="ve-popup-detail"><b>' + esc(m.action) + '</b></div>' : '') +
+        (m.inside ? '<div class="ve-popup-detail" style="color:#D50000"><b>Your location is inside this area</b></div>' : '') +
         '<div class="ve-popup-dist">' + m.dist + ' km away' + (m.resources > 0 ? ' \\u00b7 ' + m.resources + ' appliance' + (m.resources !== 1 ? 's' : '') : '') + '</div>' +
       '</div>'
     );
@@ -770,10 +1030,13 @@ function buildMapHtml(incidents, cfg) {
     window.parent.postMessage({ type: 'locationPicked', lat: lat, lon: lon }, '*');
   });
 
-  // Auto-fit bounds if incidents exist
+  // Auto-fit bounds if incidents exist (warning areas covering home: fit the area)
   if (d.markers.length > 0) {
     var points = [[d.home.lat, d.home.lon]];
-    d.markers.forEach(function(m) { points.push([m.lat, m.lon]); });
+    d.markers.forEach(function(m) {
+      points.push([m.lat, m.lon]);
+      if (m.inside) (m.polygons || []).forEach(function(r) { r.forEach(function(pt) { points.push(pt); }); });
+    });
     map.fitBounds(points, { padding: [30, 30], maxZoom: 13 });
   }
 })();
@@ -793,6 +1056,7 @@ const GROUP_META = {
   transport:        { label: "Transport", emoji: "\uD83D\uDE97", colour: "#FB8C00" },
   hazmat_health:    { label: "Hazmat",    emoji: "\u2623\uFE0F", colour: "#66BB6A" },
   outages_closures: { label: "Outages",   emoji: "\u26A1",       colour: "#78909C" },
+  quake:            { label: "Quake",     emoji: "\uD83C\uDF0F", colour: "#A1887F" },
 };
 
 const WARNING_BADGE = {
@@ -822,24 +1086,49 @@ export const render = ({ output }) => {
   let feedData = output;
   let cfg = { ...DEFAULTS };
   let quakeData = null;
+  let alertedBefore = null;
   try {
     const envelope = JSON.parse(output);
     if (envelope.config) cfg = { ...DEFAULTS, ...envelope.config };
     feedData = envelope.feed || {};
     quakeData = envelope.quakes || null;
+    alertedBefore = envelope.alerted || null;
   } catch (e) {
     // Fallback: treat entire output as feed (first run before config exists)
     try { feedData = JSON.parse(output); } catch (e2) { feedData = { error: true }; }
   }
 
-  const { error, incidents, feedSource } = parseFeed(feedData, cfg);
+  const { error, incidents, feedSource, feedUpdated, conditions } = parseFeed(feedData, cfg);
   if (!error) {
     incidents.push(...parseQuakes(quakeData, cfg));
-    incidents.sort((a, b) => a.distance - b.distance);
+    incidents.sort((a, b) => (b.homeInside ? 1 : 0) - (a.homeInside ? 1 : 0) || a.distance - b.distance);
   }
   const now = new Date();
-  const updated = now.toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" });
+  const hhmm = (d) => d.toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" });
+  const updated = hhmm(now);
   const radio = pickRadio(cfg);
+  const fire = error ? null : fireInfo(conditions, cfg);
+  const insideWarnings = incidents.filter((i) => i.homeInside);
+
+  // Feed health: when VicEmergency last published, and which feeds failed
+  const feedTime = feedUpdated ? new Date(feedUpdated) : null;
+  const feedAgeMin = feedTime && !isNaN(feedTime) ? (now - feedTime) / 60000 : null;
+  const feedStale = feedAgeMin !== null && feedAgeMin > 30;
+  const quakeFeedDown = cfg.SHOW_EARTHQUAKES && !error && !(quakeData && Array.isArray(quakeData.features));
+  const fireDown = !!(fire && fire.unavailable);
+  const healthNotes = [
+    feedSource !== "geojson" && !error ? `VicEmergency backup feed (${feedSource}) in use \u2014 no warning areas or fire danger` : null,
+    feedStale ? `VicEmergency data is ${Math.round(feedAgeMin)} min old` : null,
+    quakeFeedDown ? "Earthquake feed unavailable" : null,
+    fireDown && feedSource === "geojson" ? "Fire danger rating unavailable" : null,
+  ].filter(Boolean);
+  const feedDotColour = error ? "#FF6B6B" : (feedSource !== "geojson" || feedStale ? "#FFC107" : "#4CAF50");
+
+  // Alerts
+  if (!error && cfg.ALERTS) {
+    const { alerts, state } = collectAlerts(incidents, fire, cfg, alertedBefore);
+    if (alerts.length > 0) sendAlerts(alerts, state, cfg);
+  }
 
   // Compute group counts
   const groupCounts = {};
@@ -990,6 +1279,7 @@ export const render = ({ output }) => {
     const chk = (id) => widget.querySelector(`#ve-cfg-${id}`)?.checked;
 
     const newCfg = {
+      ...cfg,
       HOME_LAT: parseFloat(val('lat')) || DEFAULTS.HOME_LAT,
       HOME_LON: parseFloat(val('lon')) || DEFAULTS.HOME_LON,
       RADIUS_KM: parseInt(val('radius')) || DEFAULTS.RADIUS_KM,
@@ -1003,7 +1293,12 @@ export const render = ({ output }) => {
       HIDE_WHEN_CLEAR: chk('hide'),
       SHOW_EARTHQUAKES: chk('quakes'),
       QUAKE_MIN_MAG: isNaN(parseFloat(val('quakemag'))) ? DEFAULTS.QUAKE_MIN_MAG : parseFloat(val('quakemag')),
-      QUAKE_MAX_AGE_H: cfg.QUAKE_MAX_AGE_H,
+      QUAKE_MAX_AGE_H: parseInt(val('quakeage')) || DEFAULTS.QUAKE_MAX_AGE_H,
+      ABC_STATION: val('abc') || "auto",
+      FIRE_DISTRICT: val('district') || "auto",
+      ALERTS: chk('alerts'),
+      ALERT_LEVEL: val('alertlevel') || DEFAULTS.ALERT_LEVEL,
+      ALERT_SOUND: chk('alertsound'),
     };
 
     const json = JSON.stringify(newCfg, null, 2);
@@ -1050,7 +1345,8 @@ export const render = ({ output }) => {
     );
   }
 
-  if (cfg.HIDE_WHEN_CLEAR && incidents.length === 0) {
+  const fireSevereToday = !!(fire && fire.today && (fire.today.tfb || ["EXTREME", "CATASTROPHIC"].includes(fire.today.rating)));
+  if (cfg.HIDE_WHEN_CLEAR && incidents.length === 0 && !fireSevereToday) {
     return <div className="ve-hidden" />;
   }
 
@@ -1065,7 +1361,8 @@ export const render = ({ output }) => {
               {incidents.length === 0
                 ? "No active incidents"
                 : `${incidents.length} active incident${incidents.length !== 1 ? "s" : ""}`}
-              <span className="ve-feed-dot" style={{ background: feedSource === "geojson" ? "#4CAF50" : "#FFC107" }} title={`Feed: ${feedSource}`}></span>
+              <span className="ve-feed-dot" style={{ background: feedDotColour }}
+                    title={[`VicEmergency feed: ${feedSource}${feedTime ? ", published " + hhmm(feedTime) : ""}`, ...healthNotes].join("\n")}></span>
             </span>
           </div>
           <div className="ve-header-actions">
@@ -1079,6 +1376,40 @@ export const render = ({ output }) => {
             </div>
           </div>
         </div>
+
+        {insideWarnings.length > 0 && (
+          <div className="ve-inside" onClick={() => panToIncident(insideWarnings[0].lat, insideWarnings[0].lon, 0)}>
+            <span>{"\u26A0\uFE0F"}</span>
+            <span>
+              <strong>Your location is inside a warning area</strong>
+              <span className="ve-inside-detail">
+                {LEVEL_LABEL[insideWarnings[0].warningLevel] || "Warning"}{" \u2014 "}{insideWarnings[0].eventType || insideWarnings[0].category2 || insideWarnings[0].category1}
+                {insideWarnings[0].action ? ` \u2014 ${insideWarnings[0].action}` : ""}
+                {insideWarnings.length > 1 ? ` (+${insideWarnings.length - 1} more)` : ""}
+              </span>
+            </span>
+          </div>
+        )}
+
+        {fire && (
+          <div className="ve-fire" title={`${fire.district} fire weather district`}>
+            <span className="ve-fire-district">{"\uD83D\uDD25"} {fire.district}</span>
+            {fire.unavailable && <span className="ve-fire-na">Fire danger unavailable</span>}
+            {!fire.unavailable && [["Today", fire.today], ["Tomorrow", fire.tomorrow]].map(([label, day]) => {
+              if (!day) return null;
+              const st = FDR_STYLE[day.rating];
+              return (
+                <span key={label} className="ve-fire-day">
+                  <span className="ve-fire-label">{label}</span>
+                  {st
+                    ? <span className="ve-fdr" style={{ background: st.colour, color: st.text }}>{st.label}</span>
+                    : <span className="ve-fdr ve-fdr-none">No rating</span>}
+                  {day.tfb && <span className="ve-tfb">TOTAL FIRE BAN</span>}
+                </span>
+              );
+            })}
+          </div>
+        )}
 
         {nearest && (
           <div className="ve-nearest" onClick={() => panToIncident(nearest.lat, nearest.lon, 0)}>
@@ -1129,19 +1460,28 @@ export const render = ({ output }) => {
             ? (FEEDTYPE_LABEL[inc.feedType] || "")
             : (inc.status || "");
 
+          const openLink = (e) => { e.stopPropagation(); run(`open ${shq(inc.link)}`); };
+
           return (
-            <div key={inc.id} className="ve-incident" onClick={() => panToIncident(inc.lat, inc.lon, idx)}>
+            <div key={inc.id} className={`ve-incident ${inc.homeInside ? "ve-incident-inside" : ""}`} onClick={() => panToIncident(inc.lat, inc.lon, idx)}>
               <div className="ve-dot" style={{ background: dot }} />
               <div className="ve-incident-body">
                 <div className="ve-incident-title">{displayTitle}</div>
                 <div className="ve-incident-meta">
                   <span style={{ color: gm.colour || "#999" }}>{displayCat}</span>
                   {displayStatus && <span className="ve-incident-status">{displayStatus}</span>}
+                  {inc.action && <span className="ve-incident-action">{inc.action}</span>}
                 </div>
+                {inc.advice && <div className="ve-incident-advice">{inc.advice}</div>}
+                {inc.link && (
+                  <span className="ve-incident-link" onClick={openLink}>
+                    {isWarning ? "Full warning \u2197" : "More info \u2197"}
+                  </span>
+                )}
               </div>
               <div className="ve-incident-right">
                 {inc.resources > 0 && <span className="ve-incident-resources">{"\uD83D\uDE92"} {inc.resources}</span>}
-                <span className="ve-incident-dist">{inc.distance} km</span>
+                <span className="ve-incident-dist">{inc.homeInside ? "here" : `${inc.distance} km`}</span>
               </div>
             </div>
           );
@@ -1216,6 +1556,34 @@ export const render = ({ output }) => {
           <label>Show earthquakes</label>
           <input id="ve-cfg-quakes" type="checkbox" defaultChecked={cfg.SHOW_EARTHQUAKES} />
 
+          <label>Quake max age (h)</label>
+          <input id="ve-cfg-quakeage" type="number" min="1" max="168" defaultValue={cfg.QUAKE_MAX_AGE_H} />
+
+          <label>ABC radio station</label>
+          <select id="ve-cfg-abc" defaultValue={cfg.ABC_STATION || "auto"}>
+            <option value="auto">Auto (from location)</option>
+            {Object.entries(ABC_STATIONS).map(([slug, name]) => <option key={slug} value={slug}>{name}</option>)}
+          </select>
+
+          <label>Fire district</label>
+          <select id="ve-cfg-district" defaultValue={cfg.FIRE_DISTRICT || "auto"}>
+            <option value="auto">Auto (from location)</option>
+            {FIRE_DISTRICTS.map((d) => <option key={d} value={d}>{d}</option>)}
+          </select>
+
+          <label>Alerts</label>
+          <input id="ve-cfg-alerts" type="checkbox" defaultChecked={cfg.ALERTS} />
+
+          <label>Alert from level</label>
+          <select id="ve-cfg-alertlevel" defaultValue={cfg.ALERT_LEVEL}>
+            <option value="advice">Advice</option>
+            <option value="watch_and_act">Watch and Act</option>
+            <option value="emergency_warning">Emergency Warning</option>
+          </select>
+
+          <label>Alert sound</label>
+          <input id="ve-cfg-alertsound" type="checkbox" defaultChecked={cfg.ALERT_SOUND} />
+
           <label>Min quake magnitude</label>
           <input id="ve-cfg-quakemag" type="number" step="0.1" min="0" max="9" defaultValue={cfg.QUAKE_MIN_MAG} />
         </div>
@@ -1242,7 +1610,10 @@ export const render = ({ output }) => {
             </span>
           ))}
         </div>
-        <span className="ve-updated">Updated {updated}</span>
+        <span className="ve-updated" title={`Widget refreshed ${updated}`}>
+          {healthNotes.length > 0 && <span className="ve-health" title={healthNotes.join("\n")}>{"\u26A0\uFE0F"} </span>}
+          {feedTime ? `VicEmergency ${hhmm(feedTime)}` : `Updated ${updated}`}
+        </span>
       </div>
     </div>
   );
@@ -1412,16 +1783,16 @@ export const className = `
 
   .ve-chips {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 6px;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 5px;
     margin-bottom: 12px;
   }
 
   .ve-chip {
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 6px 8px;
+    gap: 3px;
+    padding: 6px 6px;
     border-radius: 8px;
     background: rgba(255,255,255,0.03);
     border: 1px solid rgba(255,255,255,0.06);
@@ -1494,6 +1865,63 @@ export const className = `
 
   .ve-incident-meta span:first-child { font-weight: 600; }
   .ve-incident-status { color: #636366; }
+  .ve-incident-action { color: #FFC107; }
+
+  .ve-incident-advice {
+    font-size: 11px;
+    color: #A1A1A6;
+    margin-top: 3px;
+    line-height: 1.35;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .ve-incident-link {
+    display: inline-block;
+    font-size: 11px;
+    color: #4A90D9;
+    margin-top: 2px;
+    cursor: pointer;
+  }
+  .ve-incident-link:hover { color: #7DB3F0; }
+
+  .ve-incident-inside { background: rgba(213,0,0,0.10); }
+
+  .ve-inside {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    margin-top: 10px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: rgba(213,0,0,0.18);
+    border: 1px solid rgba(255,82,82,0.5);
+    color: #FFFFFF;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .ve-inside strong { display: block; }
+  .ve-inside-detail { display: block; font-size: 11px; color: #FFCDD2; margin-top: 1px; }
+
+  .ve-fire {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+    margin-top: 10px;
+    font-size: 11px;
+    color: #8E8E93;
+  }
+  .ve-fire-district { color: #C7C7CC; font-weight: 600; }
+  .ve-fire-day { display: inline-flex; align-items: center; gap: 4px; }
+  .ve-fire-label { color: #8E8E93; }
+  .ve-fdr { padding: 1px 7px; border-radius: 10px; font-weight: 700; font-size: 10px; }
+  .ve-fdr-none { background: rgba(255,255,255,0.06); color: #8E8E93; font-weight: 500; }
+  .ve-fire-na { color: #8E8E93; }
+  .ve-tfb { padding: 1px 6px; border-radius: 4px; background: #D50000; color: #FFFFFF; font-weight: 700; font-size: 10px; }
+  .ve-health { cursor: help; }
 
   .ve-incident-right {
     display: flex;

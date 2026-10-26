@@ -10,11 +10,16 @@ Fetches directly from the official [VicEmergency](https://emergency.vic.gov.au) 
 
 ## Features
 
+- **Desktop alerts** — a macOS notification (with sound) when a Watch & Act or Emergency Warning appears or escalates near you, when your home is inside any warning area, when a Total Fire Ban is declared for your district, or when fire danger is Extreme or Catastrophic. Each alert is sent once
+- **Warning areas** — warning outlines are drawn on the map, and a red banner shows when your home is inside one
+- **Warning advice** — each warning shows its recommended action (e.g. Stay Informed, Leave Now), the start of the advice text and a link to the full warning on VicEmergency
+- **Fire danger rating & Total Fire Ban** — today's and tomorrow's rating for your fire weather district, in the official Australian Fire Danger Rating colours, with a Total Fire Ban flag. Shown even when all is clear
+- **Feed health** — the footer shows when VicEmergency last published its data; a ⚠️ appears if the data is stale, a backup feed is in use or the earthquake feed is down
 - **Live incident tracking** — fires, floods, storms, transport, hazmat, outages within a configurable radius
 - **Interactive Leaflet map** — dark or daylight CARTO tiles, clickable incident markers with popups, dashed watch zone ring
 - **Earthquakes** — recent quakes from Geoscience Australia within your radius, with magnitude, time since the quake and number of "felt" reports
 - **Australian Warning System** — tracks Advice, Watch & Act, and Emergency Warning levels with colour-coded badges
-- **6 category groups** — Fire, Flood, Storm, Transport, Hazmat, Outages with emoji chips and counts
+- **7 category groups** — Fire, Flood, Storm, Transport, Hazmat, Outages, Quake with emoji chips and counts
 - **Nearest incident** — distance and compass bearing updated every 2 minutes
 - **Click-to-pan** — tap an incident row to zoom the map to it, tap again to zoom back out
 - **Auto-collapse** — compact banner when all clear, expands automatically when incidents appear
@@ -76,8 +81,12 @@ All settings are accessible via the ⚙️ gear icon or the config file at `~/.v
 | `HIDE_WHEN_CLEAR` | `false` | `true` hides the widget entirely when no incidents |
 | `SHOW_EARTHQUAKES` | `true` | Include recent earthquakes from Geoscience Australia |
 | `QUAKE_MIN_MAG` | `2.0` | Smallest earthquake magnitude to show |
-| `ABC_STATION` | `"auto"` | ABC emergency radio station in the footer: `"auto"` picks it from your location, or set one of `melbourne`, `ballarat`, `centralvic`, `gippsland`, `goulburnmurray`, `milduraswanhill`, `shepparton`, `southwestvic`, `wimmera` (config file only) |
-| `QUAKE_MAX_AGE_H` | `72` | Show earthquakes from the last this-many hours (feed covers 7 days; config file only) |
+| `ABC_STATION` | `"auto"` | ABC emergency radio station in the footer: `"auto"` picks it from your location, or one of `melbourne`, `ballarat`, `centralvic`, `gippsland`, `goulburnmurray`, `milduraswanhill`, `shepparton`, `southwestvic`, `wimmera` |
+| `FIRE_DISTRICT` | `"auto"` | Fire weather district for the fire danger rating: `"auto"` picks it from your location, or a district name e.g. `"North East"` |
+| `ALERTS` | `true` | Desktop notifications for warnings and fire bans |
+| `ALERT_LEVEL` | `"watch_and_act"` | Lowest warning level that alerts: `"advice"`, `"watch_and_act"` or `"emergency_warning"`. A warning covering your home always alerts |
+| `ALERT_SOUND` | `true` | Play a sound with each alert |
+| `QUAKE_MAX_AGE_H` | `72` | Show earthquakes from the last this-many hours (feed covers 7 days) |
 
 Widget position is set in the `.jsx` file:
 
@@ -120,13 +129,21 @@ Data feeds may be delayed, incomplete, or unavailable during major events. Alway
 
 Fetches from `emergency.vic.gov.au/public/osom-geojson.json`, published by Emergency Management Victoria. The feed aggregates incidents from CFA, VICSES, BOM, Parks Victoria, VicRoads, ESTA, Melbourne Water, DEECA (formerly DELWP), FRV, and Ambulance Victoria.
 
+### Alerts
+
+Alerts use macOS notifications sent by Übersicht. The first time one appears, macOS may ask whether Übersicht can send notifications — allow it (System Settings → Notifications → Übersicht). What has already been alerted is remembered in `~/.vicemergency-alerted.json`, so each warning alerts once, and again only if it escalates.
+
+### Fire Danger Rating & Total Fire Ban
+
+Today's and tomorrow's ratings and Total Fire Ban status come with the VicEmergency feed, per fire weather district. The district is chosen from your home location using CFA's list of councils in each district ([Find your fire weather district](https://www.cfa.vic.gov.au/warnings-restrictions/find-your-fire-weather-district)); near a district boundary check the district shown and set `FIRE_DISTRICT` in ⚙️ settings if needed. Outside the fire season the rating shows "No rating".
+
 ### Emergency Radio
 
 ABC Local Radio is Victoria's official emergency broadcaster, but the station depends on where you are — ABC Melbourne 774 AM covers Melbourne and its fringe, while regional areas are served by ABC Ballarat, Central Victoria, Gippsland, Goulburn Murray, Mildura-Swan Hill, Shepparton, South West Victoria or Wimmera.
 
 The widget picks the station from your home location using a built-in table of towns and frequencies taken from Emergency Management Victoria's [list of regional emergency broadcasters](https://author.emv.vic.gov.au/node/1078). The footer shows the station and frequency (for a battery radio). Clicking it plays the station's live stream straight away in QuickTime Player — no web player to load — and falls back to the station's web page if QuickTime can't open it. Within 25 km of a town that also has a community emergency broadcaster (UGFM, Radio Mansfield, Alpine Radio, Radio KLFM, Plenty Valley FM, Radio Eastern) that station is listed too and plays the same way.
 
-Coverage is approximate — check the ABC's [frequency finder](https://reception.abc.net.au) for your exact address, and set `ABC_STATION` in the config file if the automatic choice is wrong.
+Coverage is approximate — check the ABC's [frequency finder](https://reception.abc.net.au) for your exact address, and choose the station in ⚙️ settings if the automatic choice is wrong. The station table was last checked in October 2026.
 
 ### Earthquakes
 
@@ -134,7 +151,7 @@ Earthquakes come from Geoscience Australia's [Earthquakes@GA](https://earthquake
 
 `earthquakes.ga.gov.au/geoserver/earthquakes/wfs?service=WFS&request=getfeature&typeNames=earthquakes:earthquakes_seven_days&outputFormat=application/json`
 
-Quakes within `RADIUS_KM`, at or above `QUAKE_MIN_MAG` and newer than `QUAKE_MAX_AGE_H` are listed alongside other incidents and counted in the ⛈️ Storm & Weather group. If this feed is unavailable the widget carries on with VicEmergency data only.
+Quakes within `RADIUS_KM`, at or above `QUAKE_MIN_MAG` and newer than `QUAKE_MAX_AGE_H` are listed alongside other incidents and counted in the 🌏 Quake group. If this feed is unavailable the widget carries on with VicEmergency data only.
 
 ### Fallback Chain
 
@@ -152,10 +169,11 @@ The feed status dot in the banner indicates the active source: green for primary
 |---|---|
 | 🔥 Fire | Bushfire, Planned Burn, Burn Area, Burn Advice |
 | 🌊 Flood | Flood, Riverine Flood, Flash Flood, Coastal Flood, Dam Failure |
-| ⛈️ Storm & Weather | Storm, Severe Storm, Severe Thunderstorm, Damaging Winds, Earthquake, Tsunami |
+| ⛈️ Storm & Weather | Storm, Severe Storm, Severe Thunderstorm, Damaging Winds, Tsunami |
 | 🚗 Transport | Vehicle/Aircraft/Rail/Marine Accident, Rescue |
 | ☣️ Hazmat & Health | Hazardous Material, Medical, Shark Sighting, Water Pollution |
 | ⚡ Outages & Closures | Power/Gas/Water Outage, Road Closed, School/Beach/Park Closure |
+| 🌏 Quake | Earthquakes from Geoscience Australia |
 
 ### References
 
