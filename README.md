@@ -26,6 +26,7 @@ Fetches directly from the official [VicEmergency](https://emergency.vic.gov.au) 
 - **Earthquakes** — recent quakes from Geoscience Australia within your radius, with magnitude, time since the quake and number of "felt" reports
 - **Australian Warning System** — tracks Advice, Watch & Act, and Emergency Warning levels with colour-coded badges
 - **7 category groups** — Fire, Flood, Storm, Transport, Hazmat, Outages, Quake with emoji chips and counts
+- **Victorian coal generators** — an eighth tile shows Yallourn, Loy Yang A and Loy Yang B output as a % of full capacity, coloured by AEMO's declared Lack of Reserve (LOR) level for Victoria (amber LOR2, red LOR3). Click it for each unit's output, planned/unplanned outages with expected return dates, forecast LOR notices, and the three sites on the map
 - **Nearest incident** — distance and compass bearing updated every 2 minutes
 - **Click-to-pan** — tap an incident row to zoom the map to it, tap again to zoom back out
 - **Responsible agency on hover** — hover over an incident (in the list or on the map) to see which agency is handling it, e.g. CFA, Forest Fire Management Victoria or VICSES. CFA radio links appear only on CFA incidents
@@ -168,6 +169,14 @@ Earthquakes come from Geoscience Australia's [Earthquakes@GA](https://earthquake
 `earthquakes.ga.gov.au/geoserver/earthquakes/wfs?service=WFS&request=getfeature&typeNames=earthquakes:earthquakes_seven_days&outputFormat=application/json`
 
 Quakes within `RADIUS_KM`, at or above `QUAKE_MIN_MAG` and newer than `QUAKE_MAX_AGE_H` are listed alongside other incidents and counted in the 🌏 Quake group. If this feed is unavailable the widget carries on with VicEmergency data only.
+
+### Victorian Coal Generators & Reserve
+
+From AEMO's public [NEMWeb](https://nemweb.com.au/Reports/Current/) reports, cached in `~/.vicemergency-nem`:
+
+- **Unit output** — `Dispatch_SCADA` (every 5 minutes). Full capacity is each station's published capacity split evenly between its units (Yallourn 1,480 MW, Loy Yang A 2,210 MW, Loy Yang B 1,200 MW). A unit under 10 MW counts as down
+- **Outage status** — `MTPASA_DUIDAvailability` (daily): owners' declared planned / unplanned outages and the first day the unit is available again. A unit that is down with no outage declared shows as "just dropped out"
+- **Reserve warnings** — AEMO `Market_Notice` reserve notices for Victoria. Only declared actual LOR notices colour the tile; declared forecasts are listed with their times
 
 ### Fallback Chain
 

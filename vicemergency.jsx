@@ -10,7 +10,7 @@
  *   3. Edit HOME_LAT / HOME_LON below to your location
  *   4. Optionally adjust RADIUS_KM and WIDGET_POSITION
  *
- * @version 1.8.0
+ * @version 1.9.0
  * @see https://github.com/customwebsite/vicemergency-ha
  */
 
@@ -78,6 +78,45 @@ export const command = `
   echo ',"quakes":';
   QUAKES=$(curl -sf --compressed --max-time 10 "https://earthquakes.ga.gov.au/geoserver/earthquakes/wfs?service=WFS&request=getfeature&typeNames=earthquakes:earthquakes_seven_days&outputFormat=application/json" 2>/dev/null);
   if [ -n "$QUAKES" ]; then echo "$QUAKES"; else echo 'null'; fi;
+  echo ',"nem":';
+  NEM=https://nemweb.com.au/Reports/Current; NC="$HOME/.vicemergency-nem"; mkdir -p "$NC";
+  F=$(curl -sf --max-time 10 "$NEM/Dispatch_SCADA/" 2>/dev/null | grep -o 'PUBLIC_DISPATCHSCADA_[0-9_]*[.]zip' | tail -1);
+  if [ -n "$F" ] && [ "$F" != "$(cat "$NC/scada.name" 2>/dev/null)" ]; then
+    curl -sf --max-time 15 -o "$NC/scada.zip" "$NEM/Dispatch_SCADA/$F" &&
+    unzip -p "$NC/scada.zip" | grep -E ',(YWPS[1-4]|LYA[1-4]|LOYYB[12]),' |
+      awk -F, -v q='"' '{t=$5; gsub(q,"",t); if(!n++) printf "{%stime%s:%s%s%s", q, q, q, t, q; printf ",%s%s%s:%s", q, $6, q, $7+0} END{print (n ? "}" : "{}")}' > "$NC/scada.json" &&
+    echo "$F" > "$NC/scada.name";
+  fi;
+  MN="$NEM/Market_Notice"; LAST=$(cat "$NC/notice.last" 2>/dev/null || echo 0);
+  NEW=$(curl -sf --max-time 10 "$MN/" 2>/dev/null | grep -o 'NEMITWEB1_MKTNOTICE_[0-9]*[.]R[0-9]*' | sort -u | awk -F R -v l="$LAST" '$2+0 > l+0' | sort -t R -k2 -n | tail -100);
+  if [ -n "$NEW" ]; then
+    mkdir -p "$NC/mn"; rm -f "$NC/mn/"*;
+    echo "$NEW" | xargs -P 8 -I{} curl -sf --max-time 10 -o "$NC/mn/{}" "$MN/{}";
+    for N in $NEW; do
+      [ -f "$NC/mn/$N" ] || continue;
+      if grep -q 'RESERVE NOTICE' "$NC/mn/$N"; then
+        awk -v q='"' 'function c(x){gsub("[^A-Za-z0-9 ():.,/-]","",x); return x}
+          /^Notice ID/{sub("^[^:]*: *",""); id=c($0)}
+          /^Creation Date/{sub("^[^:]*: *",""); cd=c($0)}
+          /^External Reference/{sub("^[^:]*: *",""); er=c($0)}
+          /From [0-9][0-9][0-9][0-9] hrs/{if(fr=="") fr=c($0); lr=c($0)}
+          END{if(id!="") print "[" q id q "," q cd q "," q er q "," q fr q "," q lr q "]"}' "$NC/mn/$N" >> "$NC/notices.jsonl";
+      fi;
+    done;
+    echo "$NEW" | tail -1 | awk -F R '{print $2}' > "$NC/notice.last";
+    tail -200 "$NC/notices.jsonl" > "$NC/n.tmp" 2>/dev/null && mv "$NC/n.tmp" "$NC/notices.jsonl";
+  fi;
+  F=$(curl -sf --max-time 10 "$NEM/MTPASA_DUIDAvailability/" 2>/dev/null | grep -o 'PUBLIC_MTPASADUIDAVAILABILITY_[0-9_]*[.]zip' | tail -1);
+  if [ -n "$F" ] && [ "$F" != "$(cat "$NC/outage.name" 2>/dev/null)" ]; then
+    curl -sf --max-time 30 -o "$NC/mtpasa.zip" "$NEM/MTPASA_DUIDAvailability/$F" &&
+    unzip -p "$NC/mtpasa.zip" |
+      awk -F, -v q='"' '/^I,MTPASA,DUIDAVAILABILITY/{for(i=1;i<=NF;i++){if($i=="DAY")t=i; if($i=="DUID")u=i; if($i=="PASAAVAILABILITY")a=i; if($i=="PASAUNITSTATE")s=i}} /^D,MTPASA,DUIDAVAILABILITY/{if($u ~ /^(YWPS[1-4]|LYA[1-4]|LOYYB[12])$/ && c[$u]++ < 60){x=substr($t,2,10); printf "%s[%s%s%s,%s%s%s,%s,%s%s%s]", (n++ ? "," : "["), q, $u, q, q, x, q, $a+0, q, $s, q}} END{print (n ? "]" : "[]")}' > "$NC/outage.json" &&
+    echo "$F" > "$NC/outage.name";
+  fi;
+  echo '{"scada":'; cat "$NC/scada.json" 2>/dev/null || echo 'null';
+  echo ',"outage":'; cat "$NC/outage.json" 2>/dev/null || echo 'null';
+  echo ',"notices":['; grep '.' "$NC/notices.jsonl" 2>/dev/null | paste -sd, - ; echo ']';
+  echo '}';
   echo ',"alerted":';
   cat ${ALERT_STATE_PATH} 2>/dev/null || echo 'null';
   echo '}'
@@ -94,6 +133,7 @@ let _lastClickedIdx = null;
 let _settingsOpen = false;
 let _groupFilter = null;    // category chip filter (group key) — survives refreshes until cleared
 let _alertedSession = {};   // alerts already sent this session (backs up the state file)
+let _coalOpen = false;      // Vic coal generator panel open
 
 // ─────────────────────────────────────────────────────────────
 // ▸ DATA LAYER — ported from vicemergency-ha parser
@@ -1029,7 +1069,7 @@ const FEEDTYPE_COLOURS = {
   warning: "#FFC107", "watch-and-act": "#FF6D00", "emergency-warning": "#D50000",
 };
 
-function buildMapHtml(incidents, cfg) {
+function buildMapHtml(incidents, cfg, coal) {
   const markers = incidents.map((inc) => {
     const colour = FEEDTYPE_COLOURS[inc.feedType] || GROUP_COLOURS[inc.group] || GROUP_COLOURS.other;
     const label = inc.eventType || inc.category1 || inc.title || "Incident";
@@ -1043,7 +1083,13 @@ function buildMapHtml(incidents, cfg) {
              radio: inc.cfaRadio ? { label: `CFA District ${inc.cfaRadio.district} radio`, url: inc.cfaRadio.url } : null };
   });
 
-  const dataJson = JSON.stringify({ home: { lat: cfg.HOME_LAT, lon: cfg.HOME_LON }, markers, zoom: cfg.MAP_ZOOM, filter: _groupFilter })
+  const coalSites = coal ? COAL_SITES.map((site) => {
+    const units = coal.units.filter((u) => u.duid.startsWith(site.prefix));
+    const up = units.filter((u) => u.mw !== null && !u.down).length;
+    return { name: site.name, lat: site.lat, lon: site.lon, side: site.side, up, total: units.length,
+             lines: units.map((u) => `${u.name}: ${u.pct === null ? "\u2013" : u.pct + "%"}${u.down ? " DOWN" + (u.note ? " \u2014 " + u.note : "") : ""}`) };
+  }) : [];
+  const dataJson = JSON.stringify({ home: { lat: cfg.HOME_LAT, lon: cfg.HOME_LON }, markers, zoom: cfg.MAP_ZOOM, filter: _groupFilter, coal: coalSites, coalShow: _coalOpen })
     .replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
 
   const isLight = cfg.MAP_THEME === "light";
@@ -1241,6 +1287,35 @@ function buildMapHtml(incidents, cfg) {
     if (refit) fitVisible();
   }
 
+  // Coal generator sites — shown while the coal panel is open
+  // green = all units running, amber = some down, red = all down
+  var coalLayer = L.layerGroup();
+  (d.coal || []).forEach(function(c) {
+    var col = c.up === c.total ? '#43A047' : (c.up === 0 ? '#E53935' : '#FB8C00');
+    var right = c.side !== 'left';
+    var html = '<div style="position:relative;width:18px;height:18px;">' +
+      '<div style="width:14px;height:14px;margin:2px;border-radius:3px;background:' + col + ';border:2px solid #FFFFFF;box-sizing:border-box;box-shadow:0 1px 3px rgba(0,0,0,0.45);"></div>' +
+      '<div style="position:absolute;top:1px;' + (right ? 'left:22px;' : 'right:22px;') + 'white-space:nowrap;font:700 11px -apple-system,sans-serif;color:' + col + ';${labelShadow}">' +
+      esc(c.name) + ' ' + c.up + '/' + c.total + '</div></div>';
+    L.marker([c.lat, c.lon], { icon: L.divIcon({ className: '', html: html, iconSize: [18, 18], iconAnchor: [9, 9], popupAnchor: [0, -9] }), zIndexOffset: 2000 })
+      .bindPopup('<div class="ve-popup"><div class="ve-popup-title" style="color:' + col + '">' + esc(c.name) + ' \u2014 ' + c.up + ' of ' + c.total + ' units running</div>' +
+        c.lines.map(function(l) { return '<div class="ve-popup-detail">' + esc(l) + '</div>'; }).join('') + '</div>')
+      .addTo(coalLayer);
+  });
+  function showCoal(show) {
+    map.invalidateSize();
+    map.closePopup();
+    if (show && (d.coal || []).length) {
+      coalLayer.addTo(map);
+      map.fitBounds(d.coal.map(function(c) { return [c.lat, c.lon]; }), { padding: [60, 60], maxZoom: 11 });
+    } else {
+      if (map.hasLayer(coalLayer)) map.removeLayer(coalLayer);
+      fitVisible();
+    }
+  }
+
+  if (d.coalShow) setTimeout(function() { showCoal(true); }, 0);
+
   // Radio links in popups: ask the widget to open them (the map frame can't open the browser)
   document.addEventListener('click', function(e) {
     var a = e.target.closest && e.target.closest('a[data-url]');
@@ -1266,6 +1341,9 @@ function buildMapHtml(incidents, cfg) {
     }
     if (e.data && e.data.type === 'filter') {
       applyFilter(e.data.group, true);
+    }
+    if (e.data && e.data.type === 'coal') {
+      showCoal(!!e.data.show);
     }
     if (e.data && e.data.type === 'enablePicker') {
       pickerEnabled = true;
@@ -1312,6 +1390,101 @@ function buildMapHtml(incidents, cfg) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// ▸ VICTORIAN COAL GENERATORS + RESERVE (LOR) — AEMO NEMWeb
+// ─────────────────────────────────────────────────────────────
+
+// Full capacity per unit: each station's published capacity split evenly between its units
+const COAL_UNITS = [
+  ["YWPS1", "Yallourn 1", 370], ["YWPS2", "Yallourn 2", 370],
+  ["YWPS3", "Yallourn 3", 370], ["YWPS4", "Yallourn 4", 370],
+  ["LYA1", "Loy Yang A1", 552.5], ["LYA2", "Loy Yang A2", 552.5],
+  ["LYA3", "Loy Yang A3", 552.5], ["LYA4", "Loy Yang A4", 552.5],
+  ["LOYYB1", "Loy Yang B1", 600], ["LOYYB2", "Loy Yang B2", 600],
+];
+const COAL_SITES = [
+  { name: "Yallourn",   lat: -38.177284, lon: 146.344210, prefix: "YWPS",  side: "right" },
+  { name: "Loy Yang A", lat: -38.252414, lon: 146.575334, prefix: "LYA",   side: "left" },
+  { name: "Loy Yang B", lat: -38.255503, lon: 146.586018, prefix: "LOYYB", side: "right" },
+];
+const COAL_CAPACITY = COAL_UNITS.reduce((s, u) => s + u[2], 0);   // 4,890 MW
+const COAL_DOWN_MW = 10;   // below this a unit counts as down
+
+const LOR_META = {
+  0: { label: "No reserve warnings", colour: "#8E8E93" },
+  1: { label: "LOR1 \u2014 reserves tightening, early watch", colour: "#B0BEC5" },
+  2: { label: "LOR2 \u2014 one major outage from power cuts", colour: "#FF9800" },
+  3: { label: "LOR3 \u2014 power cuts under way", colour: "#D50000" },
+};
+
+// AEMO times are NEM time (AEST, UTC+10, no daylight saving)
+const nemTime = (s) => new Date(String(s).replace(/\//g, "-").replace(" ", "T") + "+10:00");
+
+function parseCoal(nem, now) {
+  if (!nem || !nem.scada || !nem.scada.time) return null;
+  const time = nemTime(nem.scada.time);
+  if (isNaN(time)) return null;
+  const units = COAL_UNITS.map(([duid, name, cap]) => {
+    const raw = Number(nem.scada[duid]);
+    const mw = isFinite(raw) ? Math.max(0, raw) : null;
+    return { duid, name, cap, mw, pct: mw === null ? null : Math.min(100, Math.round(mw / cap * 100)), down: mw !== null && mw < COAL_DOWN_MW };
+  });
+  // Owners' declared status: planned / unplanned outage and the first day the unit is available again
+  const rows = Array.isArray(nem.outage) ? nem.outage : [];
+  const nemDay = new Date(+now + 10 * 3600000).toISOString().slice(0, 10).replace(/-/g, "/");
+  for (const u of units) {
+    if (!u.down) continue;
+    const mine = rows.filter((r) => r[0] === u.duid).sort((a, b) => (a[1] < b[1] ? -1 : 1));
+    const today = mine.find((r) => r[1] === nemDay) || mine.find((r) => r[1] > nemDay);
+    const state = today ? String(today[3]) : "";
+    if (!rows.length) u.reason = "";
+    else if (state.startsWith("OUTAGEPLAN")) u.reason = "Planned";
+    else if (state.startsWith("OUTAGEUNPLAN")) u.reason = "Unplanned";
+    else u.reason = "Just dropped out \u2013 reason not yet published";
+    if (state.startsWith("OUTAGE")) {
+      const back = mine.find((r) => r[1] > nemDay && Number(r[2]) > 0);
+      u.back = back ? new Date(back[1].replace(/\//g, "-") + "T00:00:00+10:00") : null;
+      u.note = `${u.reason} \u00b7 ${u.back ? "back ~" + u.back.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" }) : "return date not given"}`;
+    } else {
+      u.note = u.reason;
+    }
+  }
+  const total = units.reduce((s, u) => s + (u.mw || 0), 0);
+  const pct = Math.round(Math.min(total, COAL_CAPACITY) / COAL_CAPACITY * 100);
+  const running = units.filter((u) => u.mw !== null && !u.down).length;
+  const stale = (now - time) > 20 * 60000;
+
+  // Reserve: AEMO's declared Lack of Reserve notices for Victoria (the latest notice for each condition wins)
+  const notices = Array.isArray(nem.notices) ? nem.notices : null;
+  let lorNow = null;
+  const forecast = [];
+  if (notices) {
+    const dmy = (d, hm) => { const m = String(d).match(/(\d\d)\/(\d\d)\/(\d{4})/); return m ? new Date(`${m[3]}-${m[2]}-${m[1]}T${hm || "00:00"}:00+10:00`) : null; };
+    const period = (txt) => { const m = String(txt || "").match(/From (\d\d)(\d\d) hrs (\d\d\/\d\d\/\d{4}) to (\d\d)(\d\d) hrs (\d\d\/\d\d\/\d{4})/); return m ? { start: dmy(m[3], `${m[1]}:${m[2]}`), end: dmy(m[6], `${m[4]}:${m[5]}`) } : null; };
+    const latest = {};
+    for (const n of notices.slice().sort((x, y) => Number(x[0]) - Number(y[0]))) {
+      const ref = String(n[2] || "");
+      const lv = ref.match(/LOR\s*([123])/);
+      if (!lv || !/\bVIC\b|Victoria/i.test(ref)) continue;
+      const actual = /Actual/i.test(ref) && !/Forecast/i.test(ref);
+      const day = (ref.match(/\d\d\/\d\d\/\d{4}/) || [""])[0];
+      const key = `${actual ? "A" : "F"}${lv[1]}${actual ? "" : day}`;
+      const created = n[1] ? dmy(n[1], String(n[1]).split(/\s+/)[1] ? String(n[1]).split(/\s+/)[1].slice(0, 5) : "00:00") : null;
+      const first = period(n[3]), last = period(n[4]);
+      latest[key] = { actual, level: Number(lv[1]), cancelled: /Cancel/i.test(ref), created,
+                      start: first ? first.start : dmy(day), end: last ? last.end : (dmy(day) ? new Date(+dmy(day) + 86400000) : null) };
+    }
+    lorNow = 0;
+    for (const c of Object.values(latest)) {
+      if (c.cancelled) continue;
+      if (c.actual) { if (c.created && now - c.created < 12 * 3600000) lorNow = Math.max(lorNow, c.level); }
+      else if (c.end && c.end > now) forecast.push(c);
+    }
+    forecast.sort((x, y) => (x.start || 0) - (y.start || 0));
+  }
+  return { time, units, total, pct, running, stale, lorNow, forecast: forecast.slice(0, 3) };
+}
+
+// ─────────────────────────────────────────────────────────────
 // ▸ RENDERING
 // ─────────────────────────────────────────────────────────────
 
@@ -1353,12 +1526,14 @@ export const render = ({ output }) => {
   let cfg = { ...DEFAULTS };
   let quakeData = null;
   let alertedBefore = null;
+  let nemData = null;
   try {
     const envelope = JSON.parse(output);
     if (envelope.config) cfg = { ...DEFAULTS, ...envelope.config };
     feedData = envelope.feed || {};
     quakeData = envelope.quakes || null;
     alertedBefore = envelope.alerted || null;
+    nemData = envelope.nem || null;
   } catch (e) {
     // Fallback: treat entire output as feed (first run before config exists)
     try { feedData = JSON.parse(output); } catch (e2) { feedData = { error: true }; }
@@ -1383,11 +1558,13 @@ export const render = ({ output }) => {
   const feedStale = feedAgeMin !== null && feedAgeMin > 30;
   const quakeFeedDown = cfg.SHOW_EARTHQUAKES && !error && !(quakeData && Array.isArray(quakeData.features));
   const fireDown = !!(fire && fire.unavailable);
+  const coal = parseCoal(nemData, now);
   const healthNotes = [
     feedSource !== "geojson" && !error ? `VicEmergency backup feed (${feedSource}) in use \u2014 no warning areas or fire danger` : null,
     feedStale ? `VicEmergency data is ${Math.round(feedAgeMin)} min old` : null,
     quakeFeedDown ? "Earthquake feed unavailable" : null,
     fireDown && feedSource === "geojson" ? "Fire danger rating unavailable" : null,
+    !coal ? "AEMO generator data unavailable" : (coal.stale ? `AEMO generator data is from ${hhmm(coal.time)}` : null),
   ].filter(Boolean);
   const feedDotColour = error ? "#FF6B6B" : (feedSource !== "geojson" || feedStale ? "#FFC107" : "#4CAF50");
 
@@ -1475,9 +1652,25 @@ export const render = ({ output }) => {
   // Clicks on empty parts of the widget clear the filter; rows, map, links and controls keep it
   const clickWidget = (e) => {
     if (!_groupFilter) return;
-    if (e.target.closest('.ve-chip, .ve-incident, .ve-map-container, .ve-settings, .ve-settings-btn, .ve-toggle, .ve-footer-link, .ve-nearest, .ve-inside, input, select')) return;
+    if (e.target.closest('.ve-chip, .ve-coal-panel, .ve-incident, .ve-map-container, .ve-settings, .ve-settings-btn, .ve-toggle, .ve-footer-link, .ve-nearest, .ve-inside, input, select')) return;
     setGroupFilter(e, null);
   };
+
+  const toggleCoal = (e) => {
+    e.stopPropagation();
+    _coalOpen = !_coalOpen;
+    const widget = e.target.closest('.ve-widget');
+    const panel = widget && widget.querySelector('.ve-coal-panel');
+    if (panel) panel.classList.toggle('ve-coal-open', _coalOpen);
+    const chip = widget && widget.querySelector('.ve-coal-chip');
+    if (chip) chip.classList.toggle('ve-chip-selected', _coalOpen);
+    const mapContainer = widget && widget.querySelector('.ve-map-container');
+    if (mapContainer && !_collapsed && !_settingsOpen) mapContainer.style.display = (_coalOpen || showMap) ? 'block' : 'none';
+    const iframe = widget && widget.querySelector('.ve-map-iframe');
+    if (iframe && iframe.contentWindow) iframe.contentWindow.postMessage({ type: 'coal', show: _coalOpen }, '*');
+    _lastClickedIdx = null;
+  };
+  const dayTime = (d) => d.toLocaleString("en-AU", { weekday: "short", hour: "2-digit", minute: "2-digit" });
 
   const resetMapView = () => {
     if (_groupFilter) {
@@ -1536,7 +1729,7 @@ export const render = ({ output }) => {
       if (gear) gear.classList.toggle('ve-settings-btn-active', _settingsOpen);
 
       // Hide/show chips, list, footer to free space for settings
-      widget.querySelectorAll('.ve-chips, .ve-list, .ve-footer').forEach((el) => {
+      widget.querySelectorAll('.ve-chips, .ve-coal-panel, .ve-list, .ve-footer').forEach((el) => {
         el.style.display = _settingsOpen ? 'none' : '';
       });
 
@@ -1622,7 +1815,7 @@ export const render = ({ output }) => {
       const gear = widget.querySelector('.ve-settings-btn');
       if (gear) gear.classList.remove('ve-settings-btn-active');
       // Restore hidden sections
-      widget.querySelectorAll('.ve-chips, .ve-list, .ve-footer').forEach((el) => {
+      widget.querySelectorAll('.ve-chips, .ve-coal-panel, .ve-list, .ve-footer').forEach((el) => {
         el.style.display = '';
       });
       // Restore map: hide if no incidents and auto mode
@@ -1771,6 +1964,51 @@ export const render = ({ output }) => {
             </div>
           );
         })}
+        {(() => {
+          const lvl = coal ? (coal.lorNow || 0) : 0;
+          const colour = lvl >= 2 ? LOR_META[lvl].colour : "#90A4AE";
+          return (
+            <div key="coal" className={`ve-chip ve-chip-active ve-coal-chip ${_coalOpen ? "ve-chip-selected" : ""}`}
+                 style={{ borderColor: colour, color: colour }}
+                 title="Victorian coal generators \u2014 click for each unit"
+                 onClick={toggleCoal}>
+              <span className="ve-chip-emoji">{"\uD83C\uDFED"}</span>
+              <span className="ve-chip-count">{coal ? `${coal.pct}%` : "\u2013"}</span>
+              <span className="ve-chip-label">{lvl >= 1 ? `LOR${lvl}` : "Coal"}</span>
+            </div>
+          );
+        })()}
+      </div>
+
+      <div className={`ve-coal-panel ${_coalOpen ? "ve-coal-open" : ""}`}>
+        {coal && coal.lorNow !== null ? (
+          <div className="ve-coal-lor" style={{ color: LOR_META[coal.lorNow].colour, fontWeight: coal.lorNow >= 2 ? 700 : 400 }}>
+            {LOR_META[coal.lorNow].label}
+          </div>
+        ) : (
+          <div className="ve-coal-lor">Reserve status unavailable</div>
+        )}
+        {coal && coal.forecast.map((w, i) => (
+          <div key={i} className="ve-coal-forecast">Forecast LOR{w.level}{w.start ? ` ${dayTime(w.start)}` : ""}{w.end ? `\u2013${hhmm(w.end)}` : ""}</div>
+        ))}
+        {coal ? (
+          <div>
+            <div className="ve-coal-summary">
+              Coal {coal.pct}% of {COAL_CAPACITY.toLocaleString("en-AU")} MW {"\u00b7"} {coal.running} of {COAL_UNITS.length} units running {"\u00b7"} {hhmm(coal.time)}
+            </div>
+            {coal.units.map((u) => (
+              <div key={u.duid} className={`ve-coal-unit ${u.down ? "ve-coal-down" : ""}`}>
+                <span>{u.name}</span>
+                <span className="ve-coal-pct">{u.pct === null ? "\u2013" : `${u.pct}%`}</span>
+                <span className="ve-coal-flag">{u.down ? "DOWN" : ""}</span>
+                {u.down && u.note ? <span className="ve-coal-note">{u.note}</span> : null}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="ve-coal-summary">Generator data unavailable</div>
+        )}
+        <div className="ve-coal-source">Data: AEMO (NEMWeb)</div>
       </div>
 
       <div className="ve-filter-bar" style={{ display: _groupFilter ? "flex" : "none" }}>
@@ -1840,9 +2078,9 @@ export const render = ({ output }) => {
       </div>
 
       {/* Map — always in DOM, visibility managed by toggleSettings and inline style */}
-      <div className="ve-map-container" style={{ display: showMap ? 'block' : 'none' }}>
+      <div className="ve-map-container" style={{ display: (showMap || _coalOpen) ? 'block' : 'none' }}>
         <iframe
-          srcDoc={buildMapHtml(incidents, cfg)}
+          srcDoc={buildMapHtml(incidents, cfg, coal)}
           className="ve-map-iframe"
           style={{ height: `${cfg.MAP_HEIGHT}px`, background: cfg.MAP_THEME === "light" ? "#f2efe9" : "#1e1e20" }}
           sandbox="allow-scripts"
@@ -2173,6 +2411,19 @@ export const className = `
   .ve-chip-emoji { font-size: 12px; }
   .ve-chip-count { font-weight: 700; font-size: 13px; min-width: 10px; }
   .ve-chip-label { font-size: 10px; opacity: 0.8; }
+
+  .ve-coal-panel { display: none; margin: -4px 0 10px; padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,0.04); font-size: 11px; color: #C7C7CC; }
+  .ve-coal-panel.ve-coal-open { display: block; }
+  .ve-collapsed .ve-coal-panel { display: none !important; }
+  .ve-coal-lor { font-size: 12px; margin-bottom: 3px; }
+  .ve-coal-forecast { color: #8E8E93; margin-bottom: 2px; }
+  .ve-coal-summary { color: #8E8E93; margin: 4px 0 4px; }
+  .ve-coal-unit { display: grid; grid-template-columns: 1fr 44px 44px; padding: 1px 0; }
+  .ve-coal-pct { text-align: right; font-variant-numeric: tabular-nums; }
+  .ve-coal-flag { text-align: right; font-weight: 700; font-size: 10px; }
+  .ve-coal-down { color: #8E8E93; }
+  .ve-coal-note { grid-column: 1 / -1; font-size: 10px; padding-left: 10px; color: #8E8E93; }
+  .ve-coal-source { margin-top: 5px; font-size: 10px; color: #636366; }
 
   /* The list scrolls on its own so the map below always stays on screen */
   .ve-list {
