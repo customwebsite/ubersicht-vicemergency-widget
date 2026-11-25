@@ -2366,16 +2366,18 @@ export const className = `
 
   .ve-chips {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 5px;
     margin-bottom: 12px;
   }
 
   .ve-chip {
+    min-width: 0;
+    overflow: hidden;
     display: flex;
     align-items: center;
-    gap: 3px;
-    padding: 6px 6px;
+    gap: 2px;
+    padding: 6px 3px;
     border-radius: 8px;
     background: rgba(255,255,255,0.03);
     border: 1px solid rgba(255,255,255,0.06);
@@ -2408,9 +2410,9 @@ export const className = `
     border-color: currentColor;
   }
 
-  .ve-chip-emoji { font-size: 12px; }
-  .ve-chip-count { font-weight: 700; font-size: 13px; min-width: 10px; }
-  .ve-chip-label { font-size: 10px; opacity: 0.8; }
+  .ve-chip-emoji { font-size: 11px; }
+  .ve-chip-count { font-weight: 700; font-size: 12px; min-width: 10px; }
+  .ve-chip-label { font-size: 9px; opacity: 0.8; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   .ve-coal-panel { display: none; margin: -4px 0 10px; padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,0.04); font-size: 11px; color: #C7C7CC; }
   .ve-coal-panel.ve-coal-open { display: block; }
@@ -2430,6 +2432,7 @@ export const className = `
     margin-bottom: 10px;
     max-height: min(38vh, 340px);
     overflow-y: auto;
+    overflow-x: hidden;
     overscroll-behavior: contain;
     padding-right: 2px;
   }
