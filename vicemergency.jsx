@@ -84,7 +84,7 @@ export const command = `
   if [ -n "$F" ] && [ "$F" != "$(cat "$NC/scada.name" 2>/dev/null)" ]; then
     curl -sf --max-time 15 -o "$NC/scada.zip" "$NEM/Dispatch_SCADA/$F" &&
     unzip -p "$NC/scada.zip" | grep -E ',(YWPS[1-4]|LYA[1-4]|LOYYB[12]),' |
-      awk -F, -v q='"' '{t=$5; gsub(q,"",t); if(!n++) printf "{%stime%s:%s%s%s", q, q, q, t, q; printf ",%s%s%s:%s", q, $6, q, $7+0} END{print (n ? "}" : "{}")}' > "$NC/scada.json" &&
+      awk -F, -v q='"' '{t=$5; gsub(q,"",t); if(!n++) printf "{%stime%s:%s%s%s", q, q, q, t, q; printf ",%s%s%s:%s", q, $6, q, $7+0} END{print (n ? "}" : "{}")}' > "$NC/scada.tmp" && [ -s "$NC/scada.tmp" ] && mv "$NC/scada.tmp" "$NC/scada.json" &&
     echo "$F" > "$NC/scada.name";
   fi;
   MN="$NEM/Market_Notice"; LAST=$(cat "$NC/notice.last" 2>/dev/null || echo 0);
@@ -110,11 +110,11 @@ export const command = `
   if [ -n "$F" ] && [ "$F" != "$(cat "$NC/outage.name" 2>/dev/null)" ]; then
     curl -sf --max-time 30 -o "$NC/mtpasa.zip" "$NEM/MTPASA_DUIDAvailability/$F" &&
     unzip -p "$NC/mtpasa.zip" |
-      awk -F, -v q='"' '/^I,MTPASA,DUIDAVAILABILITY/{for(i=1;i<=NF;i++){if($i=="DAY")t=i; if($i=="DUID")u=i; if($i=="PASAAVAILABILITY")a=i; if($i=="PASAUNITSTATE")s=i}} /^D,MTPASA,DUIDAVAILABILITY/{if($u ~ /^(YWPS[1-4]|LYA[1-4]|LOYYB[12])$/ && c[$u]++ < 60){x=substr($t,2,10); printf "%s[%s%s%s,%s%s%s,%s,%s%s%s]", (n++ ? "," : "["), q, $u, q, q, x, q, $a+0, q, $s, q}} END{print (n ? "]" : "[]")}' > "$NC/outage.json" &&
+      awk -F, -v q='"' '/^I,MTPASA,DUIDAVAILABILITY/{for(i=1;i<=NF;i++){if($i=="DAY")t=i; if($i=="DUID")u=i; if($i=="PASAAVAILABILITY")a=i; if($i=="PASAUNITSTATE")s=i}} /^D,MTPASA,DUIDAVAILABILITY/{if($u ~ /^(YWPS[1-4]|LYA[1-4]|LOYYB[12])$/ && c[$u]++ < 60){x=substr($t,2,10); printf "%s[%s%s%s,%s%s%s,%s,%s%s%s]", (n++ ? "," : "["), q, $u, q, q, x, q, $a+0, q, $s, q}} END{print (n ? "]" : "[]")}' > "$NC/outage.tmp" && [ -s "$NC/outage.tmp" ] && mv "$NC/outage.tmp" "$NC/outage.json" &&
     echo "$F" > "$NC/outage.name";
   fi;
-  echo '{"scada":'; cat "$NC/scada.json" 2>/dev/null || echo 'null';
-  echo ',"outage":'; cat "$NC/outage.json" 2>/dev/null || echo 'null';
+  echo '{"scada":'; if [ -s "$NC/scada.json" ]; then cat "$NC/scada.json"; else echo 'null'; fi;
+  echo ',"outage":'; if [ -s "$NC/outage.json" ]; then cat "$NC/outage.json"; else echo 'null'; fi;
   echo ',"notices":['; grep '.' "$NC/notices.jsonl" 2>/dev/null | paste -sd, - ; echo ']';
   echo '}';
   echo ',"alerted":';
